@@ -6,16 +6,9 @@
 #define _USE_MATH_DEFINES
 #endif
 
-#ifndef WIN32_LEAN_AND_MEAN
-#define WIN32_LEAN_AND_MEAN
-#endif
-
-#ifndef __USE_W32_SOCKETS
-#define __USE_W32_SOCKETS
-#endif
-
-
 // general headers
+#include <algorithm>
+#include <cerrno>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -28,12 +21,16 @@
 #include <string>
 #include <vector>
 
+// zlib
+#include <zlib.h>
+
 // win32 libraries
 #include <windows.h>
 
-#include "stack_walker.hpp"
-
 #define assert(expr) ((expr) ? (void)0 : jup::_assert_fail(#expr, __FILE__, __LINE__))
+#define assert_errno(expr) ((expr) ? (void)0 : jup::_assert_errno_fail(#expr, __FILE__, __LINE__))
+// win32 specific
+#define assert_win(expr) ((expr) ? (void)0 : jup::_assert_win_fail(#expr, __FILE__, __LINE__))
 
 namespace jup {
 
@@ -50,8 +47,14 @@ using u8 = std::uint8_t;
 // Zero terminated, read-only string
 using c_str = char const*;
 
-// Custom assertion, prints stack trace
+// Custom assertions, prints stack trace
 void _assert_fail(c_str expr_str, c_str file, int line);
+void _assert_errno_fail(c_str expr_str, c_str file, int line);
+// win32 specific
+void _assert_win_fail(c_str expr_str, c_str file, int line);
+
+// Prints the error nicely into the console
+void err_msg(c_str msg, int code = 0);
 
 // Narrow a value, asserting that the conversion is valid.
 template <typename T, typename R>
@@ -60,8 +63,9 @@ inline void narrow(T& into, R from) {
 	assert(static_cast<R>(into) == from and (into > 0) == (from > 0));
 }
 
-// Closes the program
+// Closes the program violently
 void die();
+void die(c_str msg, int code = 0);
 
 // Use these facilities for general output. They may redirect into a logfile later on.
 extern std::ostream& jout;

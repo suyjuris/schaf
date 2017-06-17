@@ -1,4 +1,5 @@
 
+#include "parse_alarm.hpp"
 
 using namespace jup;
 
@@ -223,7 +224,30 @@ bool parse_cmdline(int argc, c_str const* argv, Server_options* into, bool no_re
 #endif
 
 int main(int argc, c_str const* argv) {
-    jerr << argv[0] << '\n';
-    assert(false);
+    assert(argc == 2);
+    
+    auto stream = alarm_init(argv[1]);
+    while (true) {
+        auto repo = alarm_repo(&stream);
+        jout << "Found repository " << repo << '\n';
+
+        int commits = 0;
+        int trees = 0;
+        while (true) {
+            auto const& objects = alarm_parse(&stream);
+            if (objects.size() == 0) break;
+            for (auto const& i: objects) {
+                if (i.type == Git_object::OBJ_COMMIT) {
+                    ++commits;
+                } else if (i.type == Git_object::OBJ_TREE) {
+                    ++trees;
+                } else {
+                    assert(false);
+                }
+            }
+        }
+        jout << "Commits: " << commits << ", Trees: " << trees << '\n';
+    }
+    
 	return 0;
 }

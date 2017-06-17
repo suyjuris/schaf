@@ -1,0 +1,404 @@
+
+#include "parse_alarm.hpp"
+#include "debug.hpp"
+
+namespace jup {
+
+Alarm_stream alarm_init(Buffer_view fname) {
+    Alarm_stream stream;
+    stream.in_fd = gzopen(fname.c_str(), "rb");
+    assert_errno(stream.in_fd);
+    assert(gzbuffer(stream.in_fd, 128*1024) == 0);
+    
+    stream.in_data.reserve(64*1024);
+    stream.in_data.trap_alloc(true);
+    stream.in_data_off = 0;
+    stream.in_data_znext = 0;
+    stream.out_data.reserve(64*1024);
+    stream.out_data.trap_alloc(true);
+    stream.state = Alarm_stream::REPO;
+    return stream;
+}
+
+static void stream_min(Alarm_stream* stream, int amount) {
+    assert(stream);
+    
+    if (stream->in_data.size() - stream->in_data_off < amount) {
+        auto p = stream->in_data.begin() + stream->in_data_off;
+        int size = stream->in_data.end() - p;
+        std::memmove(stream->in_data.begin(), p, size);
+        stream->in_data.resize(size);
+        stream->in_data_znext -= stream->in_data_off;
+        stream->in_data_off = 0; 
+        
+        // duplicate
+        int n = gzread(stream->in_fd, stream->in_data.end(), stream->in_data.space());
+        if (n == -1) {
+            int err;
+            c_str msg = gzerror(stream->in_fd, &err);
+            die(msg, err);
+        }
+        stream->in_data.addsize(n);
+    }
+}
+
+static bool stream_match(Alarm_stream* stream, Buffer_view str) {
+    assert(stream);
+    
+    if (std::strncmp(
+        stream->in_data.begin() + stream->in_data_off,
+        str.c_str(),
+        str.size()
+    ) == 0) {
+        stream->in_data_off += str.size();
+        return true;
+    } else {
+        return false;
+    }
+}
+
+static void stream_pop(Alarm_stream* stream, Buffer_view str) {
+    assert(stream);
+    if (not stream_match(stream, str)) {
+        jdbg < "Got" < Repr{{stream->in_data.data(), str.size()}} ,0;
+        assert(false);die();
+    }
+}
+
+Buffer_view alarm_repo(Alarm_stream* stream) {
+    assert(stream and stream->state == Alarm_stream::REPO);
+    
+    stream_min(stream, ALARM_REPO_MAX);
+    stream_pop(stream, "REPO ");
+    int size = 0;
+    while (stream->in_data[stream->in_data_off + size] != '\0') ++size;
+    Buffer_view repo {stream->in_data.begin() + stream->in_data_off, size};
+    stream->in_data_off += size;
+    stream->state = Alarm_stream::PARSE_INIT;
+    return repo;
+}
+
+static void parse_header(Alarm_stream* stream, u8* typ, u32* size) {
+    assert(stream and typ and size);
+
+    char c = stream->in_data[stream->in_data_off++];
+    int i = 0;
+    *typ = (c >> 4) & 7;
+    *size = c & 15;
+    while (c & 128) {
+        char c = stream->in_data[stream->in_data_off++];
+        *size |= (c & 127) << ((++i)*7 - 3);
+    }
+    assert(0 <= i and i <= (int)sizeof(*size));
+}
+
+static void hash_init(Alarm_stream* stream, u8 type, int size) {
+    assert(stream);
+
+    stream->hash_adler32 = adler32(0, nullptr, 0);
+    
+    c_str type_str;
+    if (type == Git_object::OBJ_COMMIT) {
+        type_str = "commit";
+    } else if (type == Git_object::OBJ_TREE) {
+        type_str = "tree";
+    } else {
+        assert(false);
+    }
+    
+    SHA1Init(&stream->hash_sha1);
+    int n = std::snprintf(
+        stream->out_data.end(), stream->out_data.space(), "%s %d", type_str, size
+    );
+    assert_errno(n != -1);
+    assert(n < stream->out_data.space());
+    
+    SHA1Update(&stream->hash_sha1, (u8 const*)stream->out_data.end(), n + 1);
+}
+
+static void hash_update(Alarm_stream* stream, int amount) {
+    assert(stream);
+
+    Buffer_view data {&stream->in_data[stream->in_data_off], amount};
+    stream->hash_adler32 = adler32(stream->hash_adler32, (u8 const*)data.data(), data.size());
+    SHA1Update(&stream->hash_sha1, (u8 const*)data.data(), data.size());
+}
+
+static void stream_zinit(Alarm_stream* stream) {
+    assert(stream and stream->in_data_zstate == Alarm_stream::Z_NONE);
+    stream_min(stream, 2);
+    u8 cmf = stream->in_data[stream->in_data_off++];
+    u8 flg = stream->in_data[stream->in_data_off++];
+    assert((cmf & 0x0f) == 8);
+    assert((cmf*256 + flg) % 31 == 0);
+    assert((flg & 32) == 0);
+    stream->in_data_znext = stream->in_data_off;
+    stream->in_data_zstate = Alarm_stream::Z_MID;
+}
+
+static void stream_skip_and_hash(Alarm_stream* stream, int offset) {
+    assert(stream and offset >= 0);
+
+    while(offset > stream->in_data.size()) {
+        hash_update(stream, stream->in_data.size() - stream->in_data_off);
+        stream->in_data_znext -= stream->in_data.size();
+        offset -= stream->in_data.size();
+        stream->in_data.resize(0);
+        
+        // duplicate
+        int n = gzread(stream->in_fd, stream->in_data.end(), stream->in_data.space());
+        if (n == -1) {
+            int err;
+            c_str msg = gzerror(stream->in_fd, &err);
+            die(msg, err);
+        }
+        stream->in_data.addsize(n);
+        stream->in_data_off = 0;
+    }
+    hash_update(stream, offset - stream->in_data_off);
+    stream->in_data_off = offset;
+}
+
+static bool stream_zeof(Alarm_stream* stream) {
+    assert(stream and (stream->in_data_zstate == Alarm_stream::Z_MID
+        or stream->in_data_zstate == Alarm_stream::Z_EOF));
+
+    return (stream->in_data_zstate == Alarm_stream::Z_EOF
+        and stream->in_data_off == stream->in_data_znext);
+}
+
+static void stream_zmin(Alarm_stream* stream, int amount) {
+    assert(stream);
+    
+    if (stream->in_data_znext - stream->in_data_off < amount) {
+        assert(stream->in_data_zstate == Alarm_stream::Z_MID);
+        stream_min(stream, amount + 5);
+        u8* p = (u8*)&stream->in_data[stream->in_data_znext];
+        u8 zhdr = *p++;
+        if (zhdr & 1) {
+            stream->in_data_zstate = Alarm_stream::Z_EOF;
+        }
+        assert((zhdr & 0xfe) == 0);
+        u16 zsize  = *p++; zsize |= *p++ << 8;
+        u16 zsize0 = *p++; zsize |= *p++ << 8;
+        assert((zsize ^ zsize0) == 0xffff);
+        
+        p = (u8*)stream->in_data.begin() + stream->in_data_off;
+        std::memmove(p + 5, p, stream->in_data_znext - stream->in_data_off);
+        stream->in_data_off += 5;
+        stream->in_data_znext += 5 + zsize;
+        assert(stream->in_data_znext - stream->in_data_off < amount);
+    } else {
+        stream_min(stream, amount);
+    }
+}
+
+static void stream_zclose(Alarm_stream* stream) {
+    assert(stream and (stream->in_data_zstate == Alarm_stream::Z_MID
+        or stream->in_data_zstate == Alarm_stream::Z_EOF));
+
+    while (stream->in_data_zstate == Alarm_stream::Z_MID) {
+        stream_skip_and_hash(stream, stream->in_data_znext);
+        stream_zmin(stream, 1);
+    }
+    stream_skip_and_hash(stream, stream->in_data_znext);
+
+    stream_min(stream, 4);
+    u8* p = (u8*)&stream->in_data[stream->in_data_off];
+    u32 adler = *p++;
+    adler = (adler << 8) | *p++;
+    adler = (adler << 8) | *p++;
+    adler = (adler << 8) | *p++;
+
+    assert(stream->hash_adler32 == adler);
+    stream->in_data_zstate = Alarm_stream::Z_NONE;
+}
+
+static void stream_zpop(Alarm_stream* stream, Buffer_view str) {
+    assert(stream);
+    hash_update(stream, str.size());
+    stream_pop(stream, str);
+}
+
+static bool stream_zmatch(Alarm_stream* stream, Buffer_view str) {
+    assert(stream);
+    
+    if (std::strncmp(
+        stream->in_data.begin() + stream->in_data_off,
+        str.c_str(),
+        str.size()
+    ) == 0) {
+        hash_update(stream, str.size());
+        stream->in_data_off += str.size();
+        return true;
+    } else {
+        return false;
+    }
+}
+
+static Sha_t zparse_sha(Alarm_stream* stream) {
+    assert(stream);
+
+    stream_zmin(stream, 20);
+    hash_update(stream, 20);
+        
+    Sha_t result = 0;
+    for (int i = 0; i < (int)sizeof(Sha_t); ++i) {
+        result = (result << 8) | stream->in_data[stream->in_data_off++];
+    }
+    stream->in_data_off += 20 - sizeof(Sha_t);
+    return result;
+}
+
+static Sha_t zparse_sha_hex(Alarm_stream* stream) {
+    assert(stream);
+
+    stream_zmin(stream, 40);
+    hash_update(stream, 40);
+        
+    Sha_t result = 0;
+    for (int i = 0; i < (int)sizeof(Sha_t)*2; ++i) {
+        char c = stream->in_data[stream->in_data_off++];
+        if ('0' <= c and c <= '9') {
+            result = (result << 4) | (c - '0');
+        } else if ('a' <= c and c <= 'f') {
+            result = (result << 4) | (c - 'a' + 10);
+        } else {
+            assert(false);
+        }
+    }
+    stream->in_data_off += 40 - 2*sizeof(Sha_t);
+    return result;
+}
+
+Flat_list<Git_object> const& alarm_parse(Alarm_stream* stream) {
+    assert(stream);
+    stream->out_data.reset();
+    
+    auto& result = stream->out_data.emplace<Flat_list<Git_object>>();
+    result.init(&stream->out_data);
+
+    if (stream->state == Alarm_stream::PARSE_INIT) {
+        stream_min(stream, 12);
+        stream_pop(stream, "PACK\0\0\0\2");
+        // Just ignore the size; it is probably empty, anyways
+        stream->in_data_off += 4;
+        stream->state = Alarm_stream::PARSE_MID;
+    } else if (stream->state == Alarm_stream::PARSE_EOF) {
+        return result;
+    }
+    assert(stream->state == Alarm_stream::PARSE_MID);
+
+    
+    while (true) {
+        stream_min(stream, ALARM_GIT_HEADER_MAX);
+        
+        u8 type;
+        u32 size;
+        parse_header(stream, &type, &size);
+
+        if (stream->out_data.space() < (int)size) break;
+
+        if (type == Git_object::OBJ_NONE) {
+            stream_min(stream, 20);
+            stream->in_data_off += 20;
+            stream->state = Alarm_stream::PARSE_EOF;
+            break;
+        } else if (type == Git_object::OBJ_COMMIT) {
+            auto& commit = result.emplace_back<Git_commit>(&stream->out_data);
+            commit.type = type;
+            
+            hash_init(stream, type, size);
+            stream_zinit(stream);
+            
+            stream_zmin(stream, ALARM_GIT_COMMIT_MAX);
+            stream_zpop(stream, "tree ");
+            commit.tree = zparse_sha_hex(stream);
+            stream_zpop(stream, "\n");
+            
+            commit.parents.init(&stream->out_data);
+            while (true) {
+                stream_zmin(stream, ALARM_GIT_COMMIT_MAX);
+                if (not stream_zmatch(stream, "parent ")) break;
+                commit.parents.push_back(zparse_sha_hex(stream), &stream->out_data);
+                stream_zpop(stream, "\n");
+            }
+            stream_zclose(stream);
+            
+            u8 sha_buf[20];
+            SHA1Final(sha_buf, &stream->hash_sha1);
+            Sha_t sha = 0;
+            for (int i = 0; i < (int)sizeof(Sha_t); ++i) {
+                sha = (sha << 8) | sha_buf[i];
+            }
+            commit.sha = sha;
+        } else if (type == Git_object::OBJ_TREE) {
+            auto& tree = result.emplace_back<Git_tree>(&stream->out_data);
+            tree.type = type;
+            
+            hash_init(stream, type, size);
+            stream_zinit(stream);
+
+            tree.entries.init(&stream->out_data);
+            while (not stream_zeof(stream)) {
+                Git_tree_Entry entry;
+                stream_zmin(stream, ALARM_GIT_TREE_MAX);
+
+                int off = stream->in_data_off;
+                
+                u32 mode = 0;
+                while (true) {
+                    u8 c = stream->in_data[off++];
+                    if (c == ' ') break;
+                    assert('0' <= c and c <= '7');
+                    mode = (mode << 3) | (c - '0');
+                }
+                switch (mode) {
+                case  040000: entry.mode = Git_tree_Entry::DIR;        break;
+                case 0100644: entry.mode = Git_tree_Entry::BLOB;       break;
+                case 0100664: entry.mode = Git_tree_Entry::BLOB_GROUP; break;
+                case 0100755: entry.mode = Git_tree_Entry::BLOB_EXE;   break;
+                case 0120000: entry.mode = Git_tree_Entry::SYMLINK;    break;
+                case 0160000: entry.mode = Git_tree_Entry::GITLINK;    break;
+                default: assert(false); break;
+                }
+
+                int i = 0;
+                while (stream->in_data[off + i] != '\0') ++i;
+                Buffer_view name {&stream->in_data[off], i};
+                entry.name = stream->strings.get_id_mod(name);
+                off += i+1;
+                
+                hash_update(stream, off - stream->in_data_off);
+                stream->in_data_off = off;
+
+                entry.sha = zparse_sha(stream);
+                stream_zpop(stream, "\n");
+
+                tree.entries.push_back(entry, &stream->out_data);
+            }
+            stream_zclose(stream);
+                        
+            u8 sha_buf[20];
+            SHA1Final(sha_buf, &stream->hash_sha1);
+            Sha_t sha = 0;
+            for (int i = 0; i < (int)sizeof(Sha_t); ++i) {
+                sha = (sha << 8) | sha_buf[i];
+            }
+            tree.sha = sha;
+        } else {
+            assert(false);
+        }
+    }
+    return result;
+}
+
+void alarm_close(Alarm_stream* stream) {
+    assert(stream);
+    gzclose(stream->in_fd);
+    stream->in_fd = nullptr;
+    stream->state = Alarm_stream::CLOSED;
+}
+
+
+} /* end of namespace jup */

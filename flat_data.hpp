@@ -40,7 +40,6 @@ struct Flat_list_iterator : public std::iterator<std::forward_iterator_tag, T> {
 		return *this;
 	}
 };
-
 template <typename T, typename _Offset_t = u16, typename _Offset_big_t = _Offset_t>
 struct Flat_list {
 	using Type = T;
@@ -111,55 +110,34 @@ struct Flat_list {
 		return *(T const*)(ptr + sizeof(Offset_t));
 	}
 
-	T& emplace_back(Buffer* containing) {
-		assert(containing);
-		assert((void*)containing->begin() <= (void*)this
-			and (void*)this() <= (void*)containing->end());
+    void _advance(Buffer* containing) {
+        assert(containing and containing->inside(this));
 		if (first == 0) {
 			first = containing->end() - (char*)this;
 		} else {
 			Offset_t* l = (Offset_t*)((char*)this + last);
-			l = containing->end() - (char*)&l;
+			*l = containing->end() - (char*)&l;
 		}
 		last = containing->end() - (char*)this;
-		containing->emplace_back<Offset_t>(Offset_t(0));
-		return containing->emplace_back<T>();
-	}
-
+		containing->emplace_back<Offset_t>(Offset_t{0});
+    }
+    
 	/**
-	* Insert an element at the back. This operation may invalidate all pointers to
-	* the Buffer, including the one you use for this object!
-	*/
-	T& push_back(T const& obj, Buffer* containing) {
-		assert(containing);
-		assert((void*)containing->begin() <= (void*)this
-			and (void*)this <= (void*)containing->end());
-		if (first == 0) {
-			first = containing->end() - (char*)this;
-		} else {
-			Offset_t* l = (Offset_t*)((char*)this + last);
-			*l = containing->end() - (char*)l;
-		}
-		last = containing->end() - (char*)this;
-		containing->emplace_back<Offset_t>(Offset_t(0));
-		return containing->emplace_back<T>(obj);
+     * Insert an element at the back. This operation may invalidate all pointers to
+     * the Buffer, including the one you use for this object!
+     */
+    template <typename T2>
+	T2& emplace_back(Buffer* containing) {
+        _advance(containing);
+		return containing->emplace_back<T2>();
 	}
-
-	/**
-	* Insert an element with additional data at the back. This operation may invalidate
-	* all pointers to the Buffer, including the one you use for this object!
-	*/
 	void push_back(Buffer_view obj, Buffer* containing) {
-		assert(containing and containing->inside(this));
-		if (first == 0) {
-			first = containing->end() - (char*)this;
-		} else {
-			Offset_t* l = (Offset_t*)((char*)this + last);
-			*l = containing->end() - (char*)l;
-		}
-		last = containing->end() - (char*)this;
-		containing->emplace_back<Offset_t>(Offset_t(0));
+        _advance(containing);
 		containing->append(obj);
+	}
+    template <typename T2>
+	void push_back(T2 const& obj, Buffer* containing) {
+        push_back(Buffer_view::from_obj(obj), containing);
 	}
 
 	/**
@@ -306,11 +284,6 @@ struct Flat_array {
 		return *(begin() + pos);
 	}
 
-	T& emplace_back(Buffer* containing) {
-		assert(containing and containing->inside(this));
-		++m_size();
-		return containing->emplace_back<T>();
-	}
 
 	/**
 	 * Insert an element at the back. The end of the list and the end of the
@@ -318,9 +291,14 @@ struct Flat_array {
 	 * the Buffer, including the one you use for this object!
 	 */
 	void push_back(T const& obj, Buffer* containing) {
-		assert(containing and containing->inside(this));
+		assert(containing and containing->inside(this) and (void*)end() == (void*)containing->end());
 		++m_size();
 		containing->emplace_back<T>(obj);
+	}
+	T& emplace_back(Buffer* containing) {
+		assert(containing and containing->inside(this) and (void*)end() == (void*)containing->end());
+		++m_size();
+		return containing->emplace_back<T>();
 	}
 
 	/**

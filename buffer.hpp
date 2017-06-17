@@ -15,21 +15,21 @@ class Buffer;
  * of data().
  */
 struct Buffer_view {
-	Buffer_view(void const* data = nullptr, int size = 0):
+	constexpr Buffer_view(void const* data = nullptr, int size = 0):
 		m_data{data}, m_size{size} {assert(size >= 0);}
-    Buffer_view(std::nullptr_t): Buffer_view{} {}
+    constexpr Buffer_view(std::nullptr_t): Buffer_view{} {}
 	
 	Buffer_view(Buffer const& buf);
 	
 	template<typename T>
-	Buffer_view(std::vector<T> const& vec):
+	constexpr Buffer_view(std::vector<T> const& vec):
 		Buffer_view{vec.data(), (int)(vec.size() * sizeof(T))} {}
 	
 	template<typename T>
-	Buffer_view(std::basic_string<T> const& str):
+	constexpr Buffer_view(std::basic_string<T> const& str):
 		Buffer_view{str.data(), (int)(str.size() * sizeof(T))} {}
 	
-	Buffer_view(char const* str):
+	constexpr Buffer_view(c_str str):
 		Buffer_view{str, (int)std::strlen(str)} {}
 
 
@@ -38,15 +38,15 @@ struct Buffer_view {
 	 * obvious overloading problems.
 	 */
 	template<typename T>
-	static Buffer_view from_obj(T const& obj) {
+	constexpr static Buffer_view from_obj(T const& obj) {
 		return Buffer_view {&obj, sizeof(obj)};
 	}
 
-	int size() const { return m_size; }
+	constexpr int size() const { return m_size; }
 	
-	char const* begin() const { return (char const*)m_data; }
-	char const* end()   const { return (char const*)m_data + m_size; }
-	char const* data()  const { return begin(); }
+	constexpr char const* begin() const { return (char const*)m_data; }
+	constexpr char const* end()   const { return (char const*)m_data + m_size; }
+	constexpr char const* data()  const { return begin(); }
 
 	/**
 	 * Provide access to the bytes, with bounds checking.
@@ -69,7 +69,7 @@ struct Buffer_view {
 	 * Generate a simple hash of the contents of this Buffer_view. An empty
 	 * buffer must have a hash of 0.
 	 */
-	u32 get_hash() const {
+	constexpr u32 get_hash() const {
 		u32 result = 0;
 		for (char c: *this) {
 			result = (result * 33) ^ c;
@@ -92,22 +92,13 @@ struct Buffer_view {
     /**
      * Return whether the buffer is valid and not empty.
      */
-    operator bool() const {
+    constexpr operator bool() const {
         return data() and size();
     }
     
 	void const* m_data;
 	int m_size;
 };
-
-/* TODO Finish or remove
-class Buffer_alloc {
-public:
-    void* alloc_new(u64 min_size, u64* out_size);
-    void* alloc_extend(void* base, u64 cur_size, u64 min_size, u64* out_size);
-    void free(void* base)
-};
-*/
 
 struct Buffer_guard {
     Buffer const* buf;
@@ -281,14 +272,14 @@ public:
 	 */
 	bool trap_alloc() const {
 #ifndef NDEBUG
-		return ((u32)m_capacity >> 31) and not program_closing;
+		return ((u32)m_capacity >> 31);
 #else
 		return false;
 #endif
 	}
 
 	/**
-	 * Set the trap_alloc() flag.
+	 * Maybe set the trap_alloc() flag and return its value.
 	 */
 	bool trap_alloc(bool value) {
 #ifndef NDEBUG
@@ -384,7 +375,6 @@ public:
         return (void const*)begin() <= ptr and ptr < (void const*)end();
     }
 
-private:
 	char* m_data = nullptr;
 	int m_size = 0, m_capacity = 0;
 };

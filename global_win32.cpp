@@ -1,10 +1,12 @@
 
+#include "libs/stack_walker_win32.hpp"
+
 namespace jup {
 
 std::ostream& jout = std::cout;
 std::ostream& jerr = std::cerr;
 
-void write_last_errmsg() {
+void win_last_errmsg() {
     auto err = GetLastError();
     char* msg = nullptr;
     FormatMessage(
@@ -16,9 +18,7 @@ void write_last_errmsg() {
         0,
         nullptr
     );
-    int l = std::strlen(msg);
-    while (l and (msg[l-1] == '\n' or msg[l-1] == '\x0d')) msg[--l] = 0;
-    jerr << "Error: " << msg << " (" << err << ")\n";
+    err_msg(msg, err);
 }
 
 class MyStackWalker : public StackWalker {
@@ -61,26 +61,52 @@ protected:
         char buf[256];
         std::snprintf(buf, sizeof(buf), "%p", (void const*)addr);
         jerr << "Error: " << szFuncName << " at " << buf << '\n';
-        write_last_errmsg();
+        win_last_errmsg();
     }
 };
 
 void _assert_fail(c_str expr_str, c_str file, int line) {
     jerr << "\nError: Assertion failed. File: " << file << ", Line " << line
-         << "\n\nExpression: " << expr_str << "\n\nStack trace:\n";
-    
-    MyStackWalker sw;
-    sw.ShowCallstack();
+         << "\n\nExpression: " << expr_str << "\n";
     die();
 }
 
+void _assert_errno_fail(c_str expr_str, c_str file, int line) {
+    auto err = errno;
+    char const* msg = std::strerror(err);
+    err_msg(msg, err);
+    _assert_fail(expr_str, file, line);
+}
+
+void _assert_win_fail(c_str expr_str, c_str file, int line) {
+    win_last_errmsg();
+    _assert_fail(expr_str, file, line);
+}
+
+void err_msg(c_str msg, int err) {
+    int l = std::strlen(msg);
+    while (l and (msg[l-1] == '\n' or msg[l-1] == '\x0d')) --l;
+    jerr << "Error: ";
+    jerr.write(msg, l);
+    jerr << " (" << err << ")\n";
+}
+
 void die() {
+    jerr << "\nStack trace:\n";
+    MyStackWalker sw;
+    sw.ShowCallstack();
+    
     // This would be the more proper way, but I can't get mingw to link a recent
     // version of msvcr without making pthreads segfault.
     //_set_abort_behavior(0, _WRITE_ABORT_MSG);
     
     //CloseHandle(GetStdHandle(STD_ERROR_HANDLE));
     std::abort();
+}
+
+void die(c_str msg, int err) {
+    err_msg(msg, err);
+    die();
 }
 
 } /* end of namespace jup */
