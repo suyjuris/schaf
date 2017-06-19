@@ -2,23 +2,9 @@
 #include "parse_alarm.hpp"
 #include "debug.hpp"
 
-namespace jup {
+#include "libs/stack_walker_win32.hpp"
 
-Alarm_stream alarm_init(Buffer_view fname) {
-    Alarm_stream stream;
-    stream.in_fd = gzopen(fname.c_str(), "rb");
-    assert_errno(stream.in_fd);
-    assert(gzbuffer(stream.in_fd, 128*1024) == 0);
-    
-    stream.in_data.reserve(64*1024);
-    stream.in_data.trap_alloc(true);
-    stream.in_data_off = 0;
-    stream.in_data_znext = 0;
-    stream.out_data.reserve(64*1024);
-    stream.out_data.trap_alloc(true);
-    stream.state = Alarm_stream::REPO;
-    return stream;
-}
+namespace jup {
 
 static void stream_min(Alarm_stream* stream, int amount) {
     assert(stream);
@@ -38,6 +24,7 @@ static void stream_min(Alarm_stream* stream, int amount) {
             c_str msg = gzerror(stream->in_fd, &err);
             die(msg, err);
         }
+        stream->bytes_read += n;
         stream->in_data.addsize(n);
     }
 }
@@ -60,22 +47,56 @@ static bool stream_match(Alarm_stream* stream, Buffer_view str) {
 static void stream_pop(Alarm_stream* stream, Buffer_view str) {
     assert(stream);
     if (not stream_match(stream, str)) {
-        jdbg < "Got" < Repr{{stream->in_data.data(), str.size()}} ,0;
-        assert(false);die();
+        jdbg < "Got " < Repr{{stream->in_data.begin() + stream->in_data_off, str.size()}} < ", expected " < Repr{str} ,0;
+        die();
     }
+}
+
+Alarm_stream alarm_init(Buffer_view fname) {
+    Alarm_stream stream;
+    stream.in_fd = gzopen(fname.c_str(), "rb");
+    assert_errno(stream.in_fd);
+    assert(gzbuffer(stream.in_fd, 512*1024) == 0);
+    
+    stream.in_data.reserve(64*1024);
+    stream.in_data.trap_alloc(true);
+    stream.in_data_off = 0;
+    stream.in_data_znext = 0;
+    stream.out_data.reserve(256*1024);
+    stream.out_data.trap_alloc(true);
+    stream.state = Alarm_stream::REPO;
+
+    jdbg.strings = &stream.strings;
+    
+    // Alarmfile magic
+    stream_min(&stream, 4);
+    stream_pop(&stream, "0\x9e\xb9\x08");
+    
+    return stream;
 }
 
 Buffer_view alarm_repo(Alarm_stream* stream) {
     assert(stream and stream->state == Alarm_stream::REPO);
+
+    alarm_pop_progress(stream);
+    stream->strings.reset();
     
-    stream_min(stream, ALARM_REPO_MAX);
-    stream_pop(stream, "REPO ");
-    int size = 0;
-    while (stream->in_data[stream->in_data_off + size] != '\0') ++size;
-    Buffer_view repo {stream->in_data.begin() + stream->in_data_off, size};
-    stream->in_data_off += size;
-    stream->state = Alarm_stream::PARSE_INIT;
-    return repo;
+    while (not alarm_eof(stream)) {
+        stream_min(stream, ALARM_REPO_MAX);
+        stream_pop(stream, "REPO ");
+        int size = 0;
+        while (stream->in_data[stream->in_data_off + size] != '\0') ++size;
+        Buffer_view repo {stream->in_data.begin() + stream->in_data_off, size};
+        stream->in_data_off += size + 1;
+
+        if (stream->in_data[stream->in_data_off] == 'P') {
+            // There was a bug in alarm, causing it to write only the header on non-existent
+            // repositories.
+            stream->state = Alarm_stream::PARSE_INIT;
+            return repo;
+        }
+    }
+    return Buffer_view {nullptr, 0};
 }
 
 static void parse_header(Alarm_stream* stream, u8* typ, u32* size) {
@@ -86,7 +107,7 @@ static void parse_header(Alarm_stream* stream, u8* typ, u32* size) {
     *typ = (c >> 4) & 7;
     *size = c & 15;
     while (c & 128) {
-        char c = stream->in_data[stream->in_data_off++];
+        c = stream->in_data[stream->in_data_off++];
         *size |= (c & 127) << ((++i)*7 - 3);
     }
     assert(0 <= i and i <= (int)sizeof(*size));
@@ -152,6 +173,7 @@ static void stream_skip_and_hash(Alarm_stream* stream, int offset) {
             c_str msg = gzerror(stream->in_fd, &err);
             die(msg, err);
         }
+        stream->bytes_read += n;
         stream->in_data.addsize(n);
         stream->in_data_off = 0;
     }
@@ -159,19 +181,13 @@ static void stream_skip_and_hash(Alarm_stream* stream, int offset) {
     stream->in_data_off = offset;
 }
 
-static bool stream_zeof(Alarm_stream* stream) {
-    assert(stream and (stream->in_data_zstate == Alarm_stream::Z_MID
-        or stream->in_data_zstate == Alarm_stream::Z_EOF));
-
-    return (stream->in_data_zstate == Alarm_stream::Z_EOF
-        and stream->in_data_off == stream->in_data_znext);
-}
-
 static void stream_zmin(Alarm_stream* stream, int amount) {
     assert(stream);
     
-    if (stream->in_data_znext - stream->in_data_off < amount) {
-        assert(stream->in_data_zstate == Alarm_stream::Z_MID);
+    if (stream->in_data_znext - stream->in_data_off < amount
+        and stream->in_data_zstate == Alarm_stream::Z_MID)
+    {
+        
         stream_min(stream, amount + 5);
         u8* p = (u8*)&stream->in_data[stream->in_data_znext];
         u8 zhdr = *p++;
@@ -179,18 +195,27 @@ static void stream_zmin(Alarm_stream* stream, int amount) {
             stream->in_data_zstate = Alarm_stream::Z_EOF;
         }
         assert((zhdr & 0xfe) == 0);
-        u16 zsize  = *p++; zsize |= *p++ << 8;
-        u16 zsize0 = *p++; zsize |= *p++ << 8;
+        u16 zsize  = *p++; zsize  |= *p++ << 8;
+        u16 zsize0 = *p++; zsize0 |= *p++ << 8;
         assert((zsize ^ zsize0) == 0xffff);
         
         p = (u8*)stream->in_data.begin() + stream->in_data_off;
         std::memmove(p + 5, p, stream->in_data_znext - stream->in_data_off);
         stream->in_data_off += 5;
         stream->in_data_znext += 5 + zsize;
-        assert(stream->in_data_znext - stream->in_data_off < amount);
     } else {
         stream_min(stream, amount);
     }
+}
+
+
+static bool stream_zeof(Alarm_stream* stream) {
+    assert(stream and (stream->in_data_zstate == Alarm_stream::Z_MID
+        or stream->in_data_zstate == Alarm_stream::Z_EOF));
+
+    stream_zmin(stream, 1);
+    return (stream->in_data_zstate == Alarm_stream::Z_EOF
+        and stream->in_data_off == stream->in_data_znext);
 }
 
 static void stream_zclose(Alarm_stream* stream) {
@@ -209,8 +234,9 @@ static void stream_zclose(Alarm_stream* stream) {
     adler = (adler << 8) | *p++;
     adler = (adler << 8) | *p++;
     adler = (adler << 8) | *p++;
-
     assert(stream->hash_adler32 == adler);
+    stream->in_data_off += 4;
+
     stream->in_data_zstate = Alarm_stream::Z_NONE;
 }
 
@@ -244,7 +270,8 @@ static Sha_t zparse_sha(Alarm_stream* stream) {
         
     Sha_t result = 0;
     for (int i = 0; i < (int)sizeof(Sha_t); ++i) {
-        result = (result << 8) | stream->in_data[stream->in_data_off++];
+        u8 c = stream->in_data[stream->in_data_off++];
+        result = (result << 8) | c;
     }
     stream->in_data_off += 20 - sizeof(Sha_t);
     return result;
@@ -271,38 +298,76 @@ static Sha_t zparse_sha_hex(Alarm_stream* stream) {
     return result;
 }
 
-Flat_list<Git_object> const& alarm_parse(Alarm_stream* stream) {
+bool alarm_parse_eof(Alarm_stream* stream) {
+    assert(stream);
+    switch (stream->state) {
+    case Alarm_stream::PARSE_INIT:
+    case Alarm_stream::PARSE_MID:
+        return false;
+    case Alarm_stream::REPO:
+        return true;
+    default:
+        assert(false);
+        return false;
+    }
+}
+
+bool alarm_eof(Alarm_stream* stream) {
+    assert(stream);
+    
+    if (stream->state == Alarm_stream::REPO) {
+        stream_min(stream, 1);
+        return stream->in_data_off == stream->in_data.size();
+    } else {
+        return false;
+    }
+}
+
+u64 alarm_pop_progress(Alarm_stream* stream) {
+    int n = stream->in_data.size() - stream->in_data_off;
+    u64 result = stream->bytes_read - n;
+    stream->bytes_read = n;
+    return result;
+}
+
+Flat_list<Git_object, u32, u32> const& alarm_parse(Alarm_stream* stream) {
     assert(stream);
     stream->out_data.reset();
     
-    auto& result = stream->out_data.emplace<Flat_list<Git_object>>();
+    auto& result = stream->out_data.emplace<Flat_list<Git_object, u32, u32>>();
     result.init(&stream->out_data);
 
     if (stream->state == Alarm_stream::PARSE_INIT) {
         stream_min(stream, 12);
-        stream_pop(stream, "PACK\0\0\0\2");
+        stream_pop(stream, {"PACK\0\0\0\2", 8});
         // Just ignore the size; it is probably empty, anyways
         stream->in_data_off += 4;
         stream->state = Alarm_stream::PARSE_MID;
-    } else if (stream->state == Alarm_stream::PARSE_EOF) {
-        return result;
     }
     assert(stream->state == Alarm_stream::PARSE_MID);
 
-    
     while (true) {
         stream_min(stream, ALARM_GIT_HEADER_MAX);
+        int offset = stream->in_data_off;
         
         u8 type;
         u32 size;
         parse_header(stream, &type, &size);
 
-        if (stream->out_data.space() < (int)size) break;
+        if (stream->out_data.space() < (int)size) {
+            if (result.size() == 0) {
+                jerr << "Error: Not enough space in buffer for object. Need " << size << ", got "
+                     << stream->out_data.capacity() << ".\n";
+                die();
+            }
+            stream->in_data_off = offset;
+            break;
+        }
 
         if (type == Git_object::OBJ_NONE) {
             stream_min(stream, 20);
             stream->in_data_off += 20;
-            stream->state = Alarm_stream::PARSE_EOF;
+            stream->state = Alarm_stream::REPO;
             break;
         } else if (type == Git_object::OBJ_COMMIT) {
             auto& commit = result.emplace_back<Git_commit>(&stream->out_data);
@@ -350,6 +415,8 @@ Flat_list<Git_object> const& alarm_parse(Alarm_stream* stream) {
                 while (true) {
                     u8 c = stream->in_data[off++];
                     if (c == ' ') break;
+                    if (not ('0' <= c and c <= '7'))
+                        jdbg < Repr{{stream->in_data.data() + stream->in_data_off - 10, 20}} < type < size,0;
                     assert('0' <= c and c <= '7');
                     mode = (mode << 3) | (c - '0');
                 }
@@ -373,7 +440,6 @@ Flat_list<Git_object> const& alarm_parse(Alarm_stream* stream) {
                 stream->in_data_off = off;
 
                 entry.sha = zparse_sha(stream);
-                stream_zpop(stream, "\n");
 
                 tree.entries.push_back(entry, &stream->out_data);
             }
@@ -387,6 +453,7 @@ Flat_list<Git_object> const& alarm_parse(Alarm_stream* stream) {
             }
             tree.sha = sha;
         } else {
+            jdbg < type < size ,0;
             assert(false);
         }
     }
@@ -398,6 +465,11 @@ void alarm_close(Alarm_stream* stream) {
     gzclose(stream->in_fd);
     stream->in_fd = nullptr;
     stream->state = Alarm_stream::CLOSED;
+
+    stream->in_data .trap_alloc(false);
+    stream->out_data.trap_alloc(false);
+
+    jdbg.strings = nullptr;
 }
 
 

@@ -10,9 +10,11 @@
 #include <algorithm>
 #include <cerrno>
 #include <cmath>
+#include <csignal>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <ctime>
 #include <fstream>
 #include <iostream>
 #include <limits>   
@@ -27,10 +29,19 @@
 // win32 libraries
 #include <windows.h>
 
+#ifdef NDEBUG
+
+#define assert(expr) (void)__builtin_expect(not (expr), 0)
+#define assert_errno(expr) assert(expr)
+#define assert_win(expr) assert(expr)
+
+#else
+
 #define assert(expr) ((expr) ? (void)0 : jup::_assert_fail(#expr, __FILE__, __LINE__))
 #define assert_errno(expr) ((expr) ? (void)0 : jup::_assert_errno_fail(#expr, __FILE__, __LINE__))
-// win32 specific
 #define assert_win(expr) ((expr) ? (void)0 : jup::_assert_win_fail(#expr, __FILE__, __LINE__))
+
+#endif
 
 namespace jup {
 
@@ -48,10 +59,10 @@ using u8 = std::uint8_t;
 using c_str = char const*;
 
 // Custom assertions, prints stack trace
-void _assert_fail(c_str expr_str, c_str file, int line);
-void _assert_errno_fail(c_str expr_str, c_str file, int line);
+[[noreturn]] void _assert_fail(c_str expr_str, c_str file, int line);
+[[noreturn]] void _assert_errno_fail(c_str expr_str, c_str file, int line);
 // win32 specific
-void _assert_win_fail(c_str expr_str, c_str file, int line);
+[[noreturn]] void _assert_win_fail(c_str expr_str, c_str file, int line);
 
 // Prints the error nicely into the console
 void err_msg(c_str msg, int code = 0);
@@ -64,8 +75,11 @@ inline void narrow(T& into, R from) {
 }
 
 // Closes the program violently
-void die();
-void die(c_str msg, int code = 0);
+[[noreturn]] void die();
+[[noreturn]] void die(c_str msg, int code = 0);
+
+// Registers a signal handler to print things nicely
+void init_signals();
 
 // Use these facilities for general output. They may redirect into a logfile later on.
 extern std::ostream& jout;

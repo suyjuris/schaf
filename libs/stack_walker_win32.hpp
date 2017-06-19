@@ -2,6 +2,8 @@
  * 
  * StackWalker.h
  *
+ *
+ *
  * LICENSE (http://www.opensource.org/licenses/bsd-license.php)
  *
  *   Copyright (c) 2005-2009, Jochen Kalmbach
@@ -29,13 +31,7 @@
  *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS 
  *   SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  *
- *
- *
- * History:
- *  2005-07-27   v1    - First public release on http://www.codeproject.com/
- *  (for additional changes see History in 'StackWalker.cpp'!
- *
- **********************************************************************/
+ * **********************************************************************/
 // #pragma once is supported starting with _MCS_VER 1000, 
 // so we need not to check the version (because we only support _MSC_VER >= 1100)!
 #pragma once
@@ -122,7 +118,7 @@ public:
 // in older compilers in order to use it... starting with VC7 we can declare it as "protected"
 protected:
 #endif
-    enum { STACKWALK_MAX_NAMELEN = 1024 }; // max name length for found symbols
+	enum { STACKWALK_MAX_NAMELEN = 1024 }; // max name length for found symbols
 
 protected:
   // Entry for each Callstack-Entry
@@ -158,11 +154,12 @@ protected:
   LPSTR m_szSymPath;
 
   int m_options;
+  int m_MaxRecursionCount;
 
   static BOOL __stdcall myReadProcMem(HANDLE hProcess, DWORD64 qwBaseAddress, PVOID lpBuffer, DWORD nSize, LPDWORD lpNumberOfBytesRead);
 
   friend StackWalkerInternal;
-};
+};  // class StackWalker
 
 
 // The "ugly" assembler-implementation is needed for systems before XP
@@ -180,7 +177,7 @@ protected:
 #ifdef CURRENT_THREAD_VIA_EXCEPTION
 // TODO: The following is not a "good" implementation, 
 // because the callstack is only valid in the "__except" block...
-#define GET_CURRENT_CONTEXT(c, contextFlags) \
+#define GET_CURRENT_CONTEXT_STACKWALKER_CODEPLEX(c, contextFlags) \
   do { \
     memset(&c, 0, sizeof(CONTEXT)); \
     EXCEPTION_POINTERS *pExp = NULL; \
@@ -193,7 +190,7 @@ protected:
   } while(0);
 #else
 // The following should be enough for walking the callstack...
-#define GET_CURRENT_CONTEXT(c, contextFlags) \
+#define GET_CURRENT_CONTEXT_STACKWALKER_CODEPLEX(c, contextFlags) \
   do { \
     memset(&c, 0, sizeof(CONTEXT)); \
     c.ContextFlags = contextFlags; \
@@ -208,7 +205,7 @@ protected:
 #else
 
 // The following is defined for x86 (XP and higher), x64 and IA64:
-#define GET_CURRENT_CONTEXT(c, contextFlags) \
+#define GET_CURRENT_CONTEXT_STACKWALKER_CODEPLEX(c, contextFlags) \
   do { \
     memset(&c, 0, sizeof(CONTEXT)); \
     c.ContextFlags = contextFlags; \

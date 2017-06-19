@@ -53,7 +53,7 @@ struct Git_tree_Entry {
 };
 
 struct Git_tree: public Git_object {
-    Flat_array<Git_tree_Entry> entries;
+    Flat_array<Git_tree_Entry, u16, u16> entries;
 };
 
 struct Git_commit: public Git_object {
@@ -63,7 +63,7 @@ struct Git_commit: public Git_object {
 
 struct Alarm_stream {
     enum State: u8 {
-        INIT = 0, REPO, PARSE_INIT, PARSE_MID, PARSE_EOF, CLOSED
+        INIT = 0, REPO, PARSE_INIT, PARSE_MID, CLOSED
     };
     enum Z_state: u8 {
         Z_NONE = 0, Z_MID, Z_EOF
@@ -82,11 +82,17 @@ struct Alarm_stream {
     Buffer out_data;
     Idmap strings;
     u8 state = 0;
+
+    u64 bytes_read = 0;
 };
 
 Alarm_stream alarm_init(Buffer_view fname);
 Buffer_view alarm_repo(Alarm_stream* stream);
-Flat_list<Git_object> const& alarm_parse(Alarm_stream* stream);
+Flat_list<Git_object, u32, u32> const& alarm_parse(Alarm_stream* stream);
 void alarm_close(Alarm_stream* stream);
+
+bool alarm_parse_eof(Alarm_stream* stream);
+bool alarm_eof(Alarm_stream* stream);
+u64 alarm_pop_progress(Alarm_stream* stream);
 
 } /* end of namespace jup */

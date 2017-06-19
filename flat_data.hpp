@@ -113,12 +113,13 @@ struct Flat_list {
     void _advance(Buffer* containing) {
         assert(containing and containing->inside(this));
 		if (first == 0) {
-			first = containing->end() - (char*)this;
+			narrow(first, containing->end() - (char*)this);
 		} else {
 			Offset_t* l = (Offset_t*)((char*)this + last);
-			*l = containing->end() - (char*)&l;
+            assert(*l == 0);
+            narrow(*l, containing->end() - (char*)l);
 		}
-		last = containing->end() - (char*)this;
+        narrow(last, containing->end() - (char*)this);
 		containing->emplace_back<Offset_t>(Offset_t{0});
     }
     
@@ -292,12 +293,12 @@ struct Flat_array {
 	 */
 	void push_back(T const& obj, Buffer* containing) {
 		assert(containing and containing->inside(this) and (void*)end() == (void*)containing->end());
-		++m_size();
+		assert(++m_size() > 0);
 		containing->emplace_back<T>(obj);
 	}
 	T& emplace_back(Buffer* containing) {
 		assert(containing and containing->inside(this) and (void*)end() == (void*)containing->end());
-		++m_size();
+		assert(++m_size() > 0);
 		return containing->emplace_back<T>();
 	}
 

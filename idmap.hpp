@@ -23,19 +23,21 @@ namespace jup {
  *   add_zero  Whether to automatically add a zero to the end of each data element; handy when
  *		using this structure for strings.
  */
-template <typename Offset_t = u32, typename Id_t = u32, bool add_zero = true>
+template <typename _Offset_t = u32, typename _Id_t = u32, bool add_zero = true>
 class Idmap_base {
 	// The maximum load before enlarging.
     constexpr static float max_load = 0.75;
 public:
+    using Offset_t = _Offset_t;
+    using Id_t = _Id_t;
+    
 	/**
 	 * Initializes the map with 32 Slots for ids.
 	 */ 
     Idmap_base(int capacity = 32) {
         data.reserve(256);
 		// Need this so that no offset is zero or one
-        data.emplace_back<char>('\0');
-		data.emplace_back<char>('\0');
+        data.append0(2);
         offsets.assign(capacity, 0);
     }
 
@@ -72,7 +74,7 @@ public:
 
         for (int index = 0; (size_t) index < offsets.size(); ++index) {
             Offset_t i = offsets[index];
-            if (!i) continue;
+            if (i == 0 or i == 1) continue;
 			// Build the original id of this index; consisting of hash + constant
             Id_t hash = get_value(index).get_hash();
 			size_t constant = ((index + offsets.size()) - hash % offsets.size()) % offsets.size();
@@ -157,6 +159,11 @@ public:
 	 * Return the number of elements inside the hashmap.
 	 */
     int size() const { return m_size; }
+
+    void reset() {
+        offsets.assign(offsets.size(), 0);
+        data.resize(2);
+    }
 
 	// Contains the data values
     Buffer data;

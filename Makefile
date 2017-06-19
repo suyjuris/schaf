@@ -6,9 +6,18 @@
 TARGET = schaf
 LIBS = -lmsvcr100 -lWs2_32 -lversion -lz -static-libstdc++ -static-libgcc
 CXX = g++
+
 CXXFLAGS = -g -Wall -Werror -pedantic -fmax-errors=2
 CPPFLAGS = -D__MSVCRT_VERSION__=0x1000 -std=c++1y
 LDFLAGS  = -Wall
+
+ifdef SCHAF_FAST
+  CXXFLAGS += -O3
+  CPPFLAGS += -DNDEBUG
+else
+  CXXFLAGS += -O2
+endif
+
 EXEEXT = .exe
 CV2PDB = cv2pdb
 LIBDIR = libs
@@ -53,7 +62,7 @@ $(TMPDIR)/$(TARGET): $(OBJECTS)
 	$(CXX) $(OBJECTS) $(LDFLAGS) $(LIBS) -o $@
 
 $(TARGET): $(TMPDIR)/$(TARGET)
-	$(CV2PDB) $<$(EXEEXT) $@$(EXEEXT)
+	$(CV2PDB) -C $<$(EXEEXT) $@$(EXEEXT)
 
 init:
 	mkdir -p /usr/local/bin

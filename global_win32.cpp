@@ -3,9 +3,6 @@
 
 namespace jup {
 
-std::ostream& jout = std::cout;
-std::ostream& jerr = std::cerr;
-
 void win_last_errmsg() {
     auto err = GetLastError();
     char* msg = nullptr;
@@ -34,6 +31,7 @@ protected:
 
         if (std::strcmp(entry.name, "ShowCallstack") == 0) return;
         if (std::strcmp(entry.name, "_assert_fail")  == 0) return;
+        if (std::strcmp(entry.name, "die")  == 0) return;
         
         if (entry.name[0] == 0)
             strcpy_s(entry.name, "(function-name not available)");
@@ -58,38 +56,12 @@ protected:
         jerr << "  " << szText;
     }
     void OnDbgHelpErr(LPCSTR szFuncName, DWORD gle, DWORD64 addr) override {
-        char buf[256];
-        std::snprintf(buf, sizeof(buf), "%p", (void const*)addr);
-        jerr << "Error: " << szFuncName << " at " << buf << '\n';
-        win_last_errmsg();
+        //char buf[256];
+        //std::snprintf(buf, sizeof(buf), "%p", (void const*)addr);
+        //jerr << "Error: " << szFuncName << " at " << buf << '\n';
+        //win_last_errmsg();
     }
 };
-
-void _assert_fail(c_str expr_str, c_str file, int line) {
-    jerr << "\nError: Assertion failed. File: " << file << ", Line " << line
-         << "\n\nExpression: " << expr_str << "\n";
-    die();
-}
-
-void _assert_errno_fail(c_str expr_str, c_str file, int line) {
-    auto err = errno;
-    char const* msg = std::strerror(err);
-    err_msg(msg, err);
-    _assert_fail(expr_str, file, line);
-}
-
-void _assert_win_fail(c_str expr_str, c_str file, int line) {
-    win_last_errmsg();
-    _assert_fail(expr_str, file, line);
-}
-
-void err_msg(c_str msg, int err) {
-    int l = std::strlen(msg);
-    while (l and (msg[l-1] == '\n' or msg[l-1] == '\x0d')) --l;
-    jerr << "Error: ";
-    jerr.write(msg, l);
-    jerr << " (" << err << ")\n";
-}
 
 void die() {
     jerr << "\nStack trace:\n";
@@ -102,11 +74,6 @@ void die() {
     
     //CloseHandle(GetStdHandle(STD_ERROR_HANDLE));
     std::abort();
-}
-
-void die(c_str msg, int err) {
-    err_msg(msg, err);
-    die();
 }
 
 } /* end of namespace jup */

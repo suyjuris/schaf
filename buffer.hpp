@@ -69,7 +69,7 @@ struct Buffer_view {
 	 * Generate a simple hash of the contents of this Buffer_view. An empty
 	 * buffer must have a hash of 0.
 	 */
-	constexpr u32 get_hash() const {
+	u32 get_hash() const {
 		u32 result = 0;
 		for (char c: *this) {
 			result = (result * 33) ^ c;
@@ -82,10 +82,7 @@ struct Buffer_view {
 	 */
 	bool operator== (Buffer_view const& buf) const {
 		if (size() != buf.size()) return false;
-		for (int i = 0; i < size(); ++i) {
-			if ((*this)[i] != buf[i]) return false;
-		}
-		return true;
+        return std::memcmp(data(), buf.data(), size()) == 0;
 	}
 	bool operator!= (Buffer_view const& buf) const { return !(*this == buf); }
 
@@ -213,8 +210,9 @@ public:
 	void append(Buffer_view buffer) {
 		append(buffer.data(), buffer.size());
 	}
-	void append0() {
-		append("", 1);
+	void append0(int count = 1) {
+        for (int i = 0; i < count; ++i)
+            append("", 1);
 	}
 
 	void pop_front(int i) {
