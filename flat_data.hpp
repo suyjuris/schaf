@@ -334,7 +334,7 @@ struct Flat_array {
 	}
 
     operator bool() const {
-        return start;
+        return start and m_size();
     }
 };
 

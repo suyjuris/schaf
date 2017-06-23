@@ -2,6 +2,7 @@
 
 #include "libs/sha1.hpp"
 
+#include "buffer.hpp"
 #include "flat_data.hpp"
 #include "idmap.hpp"
 
@@ -33,13 +34,17 @@ struct Git_object {
     Sha_t sha;
     u8 type;
 
-    Git_tree const* as_tree() const {
-        assert(type == OBJ_TREE);
-        return (Git_tree const*) this;
+    Git_commit* as_commit() {
+        return type == OBJ_COMMIT ? (Git_commit*) this : nullptr;
+    }
+    Git_tree* as_tree() {
+        return type == OBJ_TREE ? (Git_tree*) this : nullptr;
     }
     Git_commit const* as_commit() const {
-        assert(type == OBJ_COMMIT);
-        return (Git_commit const*) this;
+        return type == OBJ_COMMIT ? (Git_commit const*) this : nullptr;
+    }
+    Git_tree const* as_tree() const {
+        return type == OBJ_TREE ? (Git_tree const*) this : nullptr;
     }
 };
 
@@ -50,6 +55,10 @@ struct Git_tree_Entry {
     Sha_t sha;
     u32 name;
     u8 mode;
+
+    bool operator< (Git_tree_Entry const& other) const {
+        return name < other.name;
+    }
 };
 
 struct Git_tree: public Git_object {
@@ -62,6 +71,9 @@ struct Git_commit: public Git_object {
 };
 
 struct Alarm_stream {
+    constexpr static int BUFFER_SIZE_IN  =  64*1024;
+    constexpr static int BUFFER_SIZE_OUT = 512*1024;
+    
     enum State: u8 {
         INIT = 0, REPO, PARSE_INIT, PARSE_MID, CLOSED
     };
@@ -83,7 +95,11 @@ struct Alarm_stream {
     Idmap strings;
     u8 state = 0;
 
-    u64 bytes_read = 0;
+    std::time_t  last_progress_t = 0;
+    std::clock_t last_progress_c = 0;
+    u64 num_bytes = 0;
+    int num_commits = 0;
+    int num_trees = 0;
 };
 
 Alarm_stream alarm_init(Buffer_view fname);
@@ -93,6 +109,9 @@ void alarm_close(Alarm_stream* stream);
 
 bool alarm_parse_eof(Alarm_stream* stream);
 bool alarm_eof(Alarm_stream* stream);
-u64 alarm_pop_progress(Alarm_stream* stream);
+
+void alarm_progress(Alarm_stream* stream, int frequency = 5);
+
+void alarm_benchmark(jup_str from);
 
 } /* end of namespace jup */

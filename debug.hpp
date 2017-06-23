@@ -1,5 +1,6 @@
 #pragma once
 
+#include "array.hpp"
 #include "buffer.hpp"
 #include "idmap.hpp"
 #include "parse_alarm.hpp"
@@ -150,6 +151,14 @@ inline void operator, (Debug_ostream& out, u8 n) {
 template <typename T, typename T2, typename T3>
 inline Debug_ostream& operator< (Debug_ostream& out, Flat_array<T, T2, T3> const& fa) {
 	return out <= fa;
+}
+template <typename T>
+inline Debug_ostream& operator< (Debug_ostream& out, Array<T> const& arr) {
+	return out <= arr;
+}
+template <typename T>
+inline Debug_ostream& operator< (Debug_ostream& out, Array_view<T> const& arr) {
+	return out <= arr;
 }
 template <typename T, size_t n>
 Debug_ostream& operator< (Debug_ostream& out, T const (&arr)[n]) {

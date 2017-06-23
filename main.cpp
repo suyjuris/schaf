@@ -1,7 +1,6 @@
 
+#include "graph.hpp"
 #include "parse_alarm.hpp"
-
-#include "debug.hpp"
 
 using namespace jup;
 
@@ -226,53 +225,10 @@ bool parse_cmdline(int argc, c_str const* argv, Server_options* into, bool no_re
 #endif
 
 int main(int argc, c_str const* argv) {
-    char buf[64];
-    
     init_signals();
     
     assert(argc == 2);
-
-    auto stream = alarm_init(argv[1]);
-    while (not alarm_eof(&stream)) {
-        auto repo = alarm_repo(&stream);
-        if (not repo.size()) break;
-        jout << "Found repository " << repo.c_str() << endl;
-
-        auto t_start = std::time(nullptr);
-        auto t_cpu   = std::clock();
-        int commits = 0;
-        int trees = 0;
-
-        while (not alarm_parse_eof(&stream)) {
-            auto t_now = std::time(nullptr);
-            if (std::difftime(t_now, t_start) >= 5) {
-                t_start = t_now;
-
-                auto bytes = alarm_pop_progress(&stream);
-                auto t_cpunow = std::clock();
-                float mbit = (float)bytes / (float)(t_cpunow - t_cpu) * CLOCKS_PER_SEC / 1024.f / 1024.f;
-                t_cpu = t_cpunow;
-
-                assert((u32)std::snprintf(buf, sizeof(buf), "%3.2f MiB/s", mbit) < sizeof(buf));
-                jout << "Reading... (commits: " << commits << ", trees: " << trees
-                     << ", speed: " << buf << ")" << endl;
-            }
-            
-            auto const& objects = alarm_parse(&stream);
-            assert(objects.size());
-            for (auto const& i: objects) {
-                if (i.type == Git_object::OBJ_COMMIT) {
-                    ++commits;
-                } else if (i.type == Git_object::OBJ_TREE) {
-                    ++trees;
-                } else {
-                    assert(false);
-                }
-            }
-        }
-        jout << "Commits: " << commits << ", Trees: " << trees << endl;
-    }
-    alarm_close(&stream);
+    graph_exec_jobfile(argv[1]);
     
 	return 0;
 }

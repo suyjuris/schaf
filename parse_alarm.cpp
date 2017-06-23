@@ -1,8 +1,7 @@
 
 #include "parse_alarm.hpp"
 #include "debug.hpp"
-
-#include "libs/stack_walker_win32.hpp"
+#include "utilities.hpp"
 
 namespace jup {
 
@@ -24,7 +23,7 @@ static void stream_min(Alarm_stream* stream, int amount) {
             c_str msg = gzerror(stream->in_fd, &err);
             die(msg, err);
         }
-        stream->bytes_read += n;
+        stream->num_bytes += n;
         stream->in_data.addsize(n);
     }
 }
@@ -58,15 +57,18 @@ Alarm_stream alarm_init(Buffer_view fname) {
     assert_errno(stream.in_fd);
     assert(gzbuffer(stream.in_fd, 512*1024) == 0);
     
-    stream.in_data.reserve(64*1024);
+    stream.in_data.reserve(Alarm_stream::BUFFER_SIZE_IN);
     stream.in_data.trap_alloc(true);
     stream.in_data_off = 0;
     stream.in_data_znext = 0;
-    stream.out_data.reserve(256*1024);
+    stream.out_data.reserve(Alarm_stream::BUFFER_SIZE_OUT);
     stream.out_data.trap_alloc(true);
     stream.state = Alarm_stream::REPO;
 
     jdbg.strings = &stream.strings;
+
+    stream.last_progress_t = std::time(nullptr);
+    stream.last_progress_c = std::clock();
     
     // Alarmfile magic
     stream_min(&stream, 4);
@@ -78,7 +80,8 @@ Alarm_stream alarm_init(Buffer_view fname) {
 Buffer_view alarm_repo(Alarm_stream* stream) {
     assert(stream and stream->state == Alarm_stream::REPO);
 
-    alarm_pop_progress(stream);
+    stream->num_commits = 0;
+    stream->num_trees   = 0;
     stream->strings.reset();
     
     while (not alarm_eof(stream)) {
@@ -113,23 +116,25 @@ static void parse_header(Alarm_stream* stream, u8* typ, u32* size) {
     assert(0 <= i and i <= (int)sizeof(*size));
 }
 
+static c_str get_type_str(u8 type) {
+    if (type == Git_object::OBJ_COMMIT) {
+        return "commit";
+    } else if (type == Git_object::OBJ_TREE) {
+        return "tree";
+    } else {
+        assert(false);
+        return nullptr;
+    }
+}
+
 static void hash_init(Alarm_stream* stream, u8 type, int size) {
     assert(stream);
 
     stream->hash_adler32 = adler32(0, nullptr, 0);
-    
-    c_str type_str;
-    if (type == Git_object::OBJ_COMMIT) {
-        type_str = "commit";
-    } else if (type == Git_object::OBJ_TREE) {
-        type_str = "tree";
-    } else {
-        assert(false);
-    }
-    
+        
     SHA1Init(&stream->hash_sha1);
     int n = std::snprintf(
-        stream->out_data.end(), stream->out_data.space(), "%s %d", type_str, size
+        stream->out_data.end(), stream->out_data.space(), "%s %d", get_type_str(type), size
     );
     assert_errno(n != -1);
     assert(n < stream->out_data.space());
@@ -173,7 +178,7 @@ static void stream_skip_and_hash(Alarm_stream* stream, int offset) {
             c_str msg = gzerror(stream->in_fd, &err);
             die(msg, err);
         }
-        stream->bytes_read += n;
+        stream->num_bytes += n;
         stream->in_data.addsize(n);
         stream->in_data_off = 0;
     }
@@ -323,16 +328,31 @@ bool alarm_eof(Alarm_stream* stream) {
     }
 }
 
-u64 alarm_pop_progress(Alarm_stream* stream) {
+void alarm_progress(Alarm_stream* stream, int frequency) {
+    assert(stream);
+    
+    auto now_t = std::time(nullptr);
+    if (std::difftime(now_t, stream->last_progress_t) < frequency) return;
+    
+    stream->last_progress_t = now_t;
+
     int n = stream->in_data.size() - stream->in_data_off;
-    u64 result = stream->bytes_read - n;
-    stream->bytes_read = n;
-    return result;
+    u64 bytes = stream->num_bytes - n;
+    stream->num_bytes = n;
+
+    auto now_c = std::clock();
+    float mbit = (float)bytes / (float)(now_c - stream->last_progress_c)
+        * CLOCKS_PER_SEC / 1024.f / 1024.f;
+    stream->last_progress_c = now_c;
+
+    jout << "Reading... (commits: " << stream->num_commits << ", trees: " << stream->num_trees
+         << ", speed: " << jup_printf("%3.2f MiB/s", mbit) << ")" << endl;
 }
 
 Flat_list<Git_object, u32, u32> const& alarm_parse(Alarm_stream* stream) {
     assert(stream);
     stream->out_data.reset();
+    stream->out_data.reserve(Alarm_stream::BUFFER_SIZE_OUT);
     
     auto& result = stream->out_data.emplace<Flat_list<Git_object, u32, u32>>();
     result.init(&stream->out_data);
@@ -354,10 +374,10 @@ Flat_list<Git_object, u32, u32> const& alarm_parse(Alarm_stream* stream) {
         u32 size;
         parse_header(stream, &type, &size);
 
-        if (stream->out_data.space() < (int)size) {
+        if (stream->out_data.space() < (int)size + 32) {
             if (result.size() == 0) {
-                jerr << "Error: Not enough space in buffer for object. Need " << size << ", got "
-                     << stream->out_data.capacity() << ".\n";
+                jerr << "Error: Not enough space in buffer for object (type: " << get_type_str(type)
+                     << "). Need " << size << ", got " << stream->out_data.capacity() << ".\n";
                 die();
             }
             stream->in_data_off = offset;
@@ -397,6 +417,8 @@ Flat_list<Git_object, u32, u32> const& alarm_parse(Alarm_stream* stream) {
                 sha = (sha << 8) | sha_buf[i];
             }
             commit.sha = sha;
+
+            ++stream->num_commits;
         } else if (type == Git_object::OBJ_TREE) {
             auto& tree = result.emplace_back<Git_tree>(&stream->out_data);
             tree.type = type;
@@ -452,6 +474,8 @@ Flat_list<Git_object, u32, u32> const& alarm_parse(Alarm_stream* stream) {
                 sha = (sha << 8) | sha_buf[i];
             }
             tree.sha = sha;
+            
+            ++stream->num_trees;
         } else {
             jdbg < type < size ,0;
             assert(false);
@@ -472,5 +496,32 @@ void alarm_close(Alarm_stream* stream) {
     jdbg.strings = nullptr;
 }
 
+void alarm_benchmark(jup_str from) {
+    auto stream = alarm_init(from);
+    while (not alarm_eof(&stream)) {
+        auto repo = alarm_repo(&stream);
+        if (not repo.size()) break;
+        jout << "Found repository " << repo.c_str() << endl;
+
+        while (not alarm_parse_eof(&stream)) {
+            alarm_progress(&stream);
+            
+            auto const& objects = alarm_parse(&stream);
+            assert(objects.size());
+            for (auto const& i: objects) {
+                if (i.type == Git_object::OBJ_COMMIT) {
+                    // nothing
+                } else if (i.type == Git_object::OBJ_TREE) {
+                    // nothing
+                } else {
+                    assert(false);
+                }
+            }
+        }
+        jout << "Commits: " << stream.num_commits << ", Trees: "
+             << stream.num_trees << endl;
+    }
+    alarm_close(&stream);
+}
 
 } /* end of namespace jup */

@@ -16,7 +16,10 @@ class Buffer;
  */
 struct Buffer_view {
 	constexpr Buffer_view(void const* data = nullptr, int size = 0):
-		m_data{data}, m_size{size} {assert(size >= 0);}
+		m_data{data}, m_size{size}
+    {
+        assert(data == nullptr ? size == 0 : size >= 0);
+    }
     constexpr Buffer_view(std::nullptr_t): Buffer_view{} {}
 	
 	Buffer_view(Buffer const& buf);
@@ -65,16 +68,28 @@ struct Buffer_view {
 		return data();
 	}
 
+    /**
+     * Return whether the pointer is inside the buffer
+     */
+    template <typename T>
+    bool inside(T const* ptr) const {
+        // duplicates Buffer::inside
+        return (void const*)begin() <= (void const*)ptr
+            and (void const*)(ptr + 1) <= (void const*)end();
+    }
+    
 	/**
 	 * Generate a simple hash of the contents of this Buffer_view. An empty
 	 * buffer must have a hash of 0.
 	 */
 	u32 get_hash() const {
-		u32 result = 0;
+        // FNV-1a algorithm
+		u32 result = 2166136261;
 		for (char c: *this) {
-			result = (result * 33) ^ c;
+			result = (result ^ c) * 16777619;
 		}
-		return result;
+        // Always return 0 when the buffer is empty
+		return result ^ 2166136261;
 	}
 
 	/**
@@ -87,6 +102,17 @@ struct Buffer_view {
 	bool operator!= (Buffer_view const& buf) const { return !(*this == buf); }
 
     /**
+     * Compare lexicographically by bytes
+     */
+    int compare(Buffer_view const& buf) const {
+        auto cmp1 = std::memcmp(data(), buf.data(), std::min(size(), buf.size()));
+        auto cmp2 = (size() > buf.size()) - (size() < buf.size());
+        return cmp1 ? cmp1 : cmp2;
+	}
+	bool operator< (Buffer_view const& buf) const { return compare(buf) < 0; }
+    
+
+    /**
      * Return whether the buffer is valid and not empty.
      */
     constexpr operator bool() const {
@@ -96,6 +122,13 @@ struct Buffer_view {
 	void const* m_data;
 	int m_size;
 };
+
+using jup_str = Buffer_view;
+
+inline std::ostream& operator<< (std::ostream& s, Buffer_view buf) {
+    s.write(buf.data(), buf.size());
+    return s;
+}
 
 struct Buffer_guard {
     Buffer const* buf;
@@ -139,6 +172,7 @@ class Buffer {
 	static_assert(sizeof(int) == 4, "Assuming 32bit ints for the bitmasks.");
 #endif
 public:
+
 	/**
 	 * These do what you would expect them to.
 	 */
@@ -155,8 +189,10 @@ public:
 		buf.m_size = 0;
 		buf.m_capacity = 0;
 	}
-	~Buffer() { free(); }
-	Buffer& operator= (Buffer const& buf) {
+
+    ~Buffer() { free(); }
+
+    Buffer& operator= (Buffer const& buf) {
 		reset();
 		append(buf);
 		return *this;
@@ -251,6 +287,17 @@ public:
 		m_size = 0;
 		m_capacity = 0;
 	}
+
+    /**
+     * Release ownership of the memory, and return a Buffer_view of the valid region.
+     */
+    Buffer_view release() {
+        Buffer_view result {begin(), size()};
+        m_data = nullptr;
+        m_size = 0;
+        m_capacity = 0;
+        return result;
+    }
 
 	int size() const { return m_size; }
 	int capacity() const {
@@ -350,29 +397,38 @@ public:
 		return data()[pos];
 	}
 
-	void write_to_file(Buffer_view filename) {
+	void write_to_file(Buffer_view filename, bool binary = true) {
 		std::ofstream o;
-		o.open(filename.c_str(), std::ios::out | std::ios::binary);
+        auto flags = (binary ? (std::ios::out | std::ios::binary) : std::ios::out);
+		o.open(filename.c_str(), flags);
 		o.write(data(), size());
 		o.close();
 	}
 
-	void read_from_file(Buffer_view filename) {
+	void read_from_file(Buffer_view filename, bool binary = true, int maxsize = -1) {
 		std::ifstream i;
-		i.open(filename.c_str(), std::ios::binary | std::ios::ate);
+        auto flags = (binary ? (std::ios::ate | std::ios::binary) : std::ios::ate);
+		i.open(filename.c_str(), flags);
         std::streamsize fsize = i.tellg();
+        assert(fsize <= (std::streamsize)maxsize);
         i.seekg(0, std::ios::beg);
         reserve_space(fsize);
-        assert(i.read(end(), fsize));
-        assert(i.gcount() == fsize);
-        addsize(fsize);
+        i.read(end(), fsize);
+        assert(binary ? i.gcount() == fsize : i.gcount() <= fsize);
+        addsize(i.gcount());
 		i.close();
 	}
 
-    bool inside(void const* ptr) const {
-        return (void const*)begin() <= ptr and ptr < (void const*)end();
+    /**
+     * Return whether the pointer is inside the buffer
+     */
+    template <typename T>
+    bool inside(T const* ptr) const {
+        // duplicates Buffer_view::inside
+        return (void const*)begin() <= (void const*)ptr
+            and (void const*)(ptr + 1) <= (void const*)end();
     }
-
+    
 	char* m_data = nullptr;
 	int m_size = 0, m_capacity = 0;
 };

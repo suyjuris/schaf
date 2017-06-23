@@ -8,14 +8,14 @@ LIBS = -lmsvcr100 -lWs2_32 -lversion -lz -static-libstdc++ -static-libgcc
 CXX = g++
 
 CXXFLAGS = -g -Wall -Werror -pedantic -fmax-errors=2
-CPPFLAGS = -D__MSVCRT_VERSION__=0x1000 -std=c++1y
+CPPFLAGS = -D__MSVCRT_VERSION__=0x1000 -std=c++1z
 LDFLAGS  = -Wall
 
 ifdef SCHAF_FAST
   CXXFLAGS += -O3
   CPPFLAGS += -DNDEBUG
 else
-  CXXFLAGS += -O2
+  CXXFLAGS += -Og
 endif
 
 EXEEXT = .exe
