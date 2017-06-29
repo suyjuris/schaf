@@ -101,11 +101,11 @@ struct Array_view {
 	
 	constexpr int size() const { return m_size; }
 	
-	constexpr char const* begin() const { return m_data; }
-	constexpr char const* end()   const { return m_data + m_size; }
-	constexpr char const* data()  const { return begin(); }
+	constexpr T const* begin() const { return m_data; }
+	constexpr T const* end()   const { return m_data + m_size; }
+	constexpr T const* data()  const { return begin(); }
 
-	char operator[] (int pos) const {
+	T const& operator[] (int pos) const {
 		assert(0 <= pos and pos < size());
 		return data()[pos];
 	}
@@ -119,14 +119,59 @@ struct Array_view {
 	}
 
 	bool operator== (Array_view<T> const& other) const {
-		if (size() != other.size()) return false;
-        return std::memcmp(data(), other.data(), size() * sizeof(T)) == 0;
+        return as_bytes() == other.as_bytes();
 	}
-	bool operator!= (Buffer_view const& buf) const { return !(*this == buf); }
+	bool operator!= (Array_view<T> const& buf) const { return !(*this == buf); }
 
     constexpr operator bool() const { return data() and size(); }
     
 	T const* m_data;
+	int m_size;
+};
+
+template <typename T>
+struct Array_view_mut {
+	Array_view_mut(T* data = nullptr, int size = 0):
+		m_data{data}, m_size{size} {assert(size >= 0);}
+    Array_view_mut(std::nullptr_t): Array_view_mut{} {}
+	
+	Array_view_mut(Array<T>& buf):
+        m_data{buf.begin()}, m_size{buf.size()} {}
+	
+	Array_view_mut(std::vector<T>& vec):
+		Buffer_view{vec.data(), (int)(vec.size())} {}
+	
+	int size() const { return m_size; }
+	
+	T* begin() { return m_data; }
+	T* end()   { return m_data + m_size; }
+    T* data()  { return begin(); }
+
+	T& operator[] (int pos) {
+		assert(0 <= pos and pos < size());
+		return data()[pos];
+	}
+
+    Buffer_view as_bytes() const {
+        return {data(), size() * sizeof(T)};
+    }
+
+	u32 get_hash() const {
+        return as_bytes().get_hash();
+	}
+
+	bool operator== (Array_view<T> const& other) const {
+        return as_bytes() == other.as_bytes();
+	}
+	bool operator== (Array_view_mut<T> const& other) const {
+        return as_bytes() == other.as_bytes();
+	}
+	bool operator!= (Array_view<T>  const& buf) const { return !(*this == buf); }
+	bool operator!= (Array_view_mut const& buf) const { return !(*this == buf); }
+
+    constexpr operator bool() const { return data() and size(); }
+    
+	T* m_data;
 	int m_size;
 };
 

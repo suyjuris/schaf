@@ -131,19 +131,22 @@ inline std::ostream& operator<< (std::ostream& s, Buffer_view buf) {
 }
 
 struct Buffer_guard {
-    Buffer const* buf;
+    Buffer* buf;
     int size_target;
+    bool trap_alloc;
 
-    Buffer_guard(): buf{nullptr}, size_target{0} {}
-    Buffer_guard(Buffer const& buf, int size_incr);
+    Buffer_guard(): buf{nullptr}, size_target{0}, trap_alloc{false} {}
+    Buffer_guard(Buffer& buf, int size_incr);
 
     Buffer_guard(Buffer_guard&& g) {
         std::swap(buf, g.buf);
         std::swap(size_target, g.size_target);
+        std::swap(trap_alloc, g.trap_alloc);
     }
     Buffer_guard& operator= (Buffer_guard&& g) {
         std::swap(buf, g.buf);
         std::swap(size_target, g.size_target);
+        std::swap(trap_alloc, g.trap_alloc);
         return *this;
     }
     
@@ -247,8 +250,14 @@ public:
 		append(buffer.data(), buffer.size());
 	}
 	void append0(int count = 1) {
-        for (int i = 0; i < count; ++i)
-            append("", 1);
+		if (!count) return;
+		assert(count > 0);
+		if (capacity() < m_size + count)
+			reserve(m_size + count);
+		
+		assert(capacity() >= count);
+		std::memset(m_data + m_size, 0, count);
+		m_size += count;
 	}
 
 	void pop_front(int i) {
@@ -433,10 +442,16 @@ public:
 	int m_size = 0, m_capacity = 0;
 };
 
-inline Buffer_guard::Buffer_guard(Buffer const& buf, int size_incr):
-    buf{&buf}, size_target{buf.size() + size_incr} {}
+inline Buffer_guard::Buffer_guard(Buffer& buf, int size_incr):
+    buf{&buf}, size_target{buf.size() + size_incr}, trap_alloc{buf.trap_alloc()}
+{
+    buf.trap_alloc(true);
+}
 inline Buffer_guard::~Buffer_guard() {
-    if (buf) { assert(buf->size() == size_target); }
+    if (buf) {
+        assert(buf->size() == size_target);
+        buf->trap_alloc(trap_alloc);
+    }
 }
 
 inline Buffer_view::Buffer_view(Buffer const& buf):

@@ -205,10 +205,10 @@ struct Flat_array {
 	Flat_array(): start{0} {}
 	Flat_array(Buffer* containing) { init(containing); }
     
-    static int total_space(int size) {
+    constexpr static int total_space(int size) {
         return sizeof(Flat_array<T, Offset_t, Size_t>) + extra_space(size);
     }
-    static int extra_space(int size) {
+    constexpr static int extra_space(int size) {
         return sizeof(Size_t) + sizeof(T) * size;
     }
 
@@ -221,6 +221,13 @@ struct Flat_array {
 		narrow(start, containing->end() - (char*)this);
         // This may invalidate us, but that is okay
 		containing->emplace_back<Size_t>();
+	}
+	void init(int num_zeros, Buffer* containing) {
+		assert(containing and containing->inside(this));
+		narrow(start, containing->end() - (char*)this);
+        // This may invalidate us, but that is okay
+		containing->emplace_back<Size_t>((Size_t)num_zeros);
+        containing->append0(num_zeros * sizeof(T));
 	}
 
 	void init(Flat_array<Type, Offset_t, Size_t> const& orig, Buffer* containing) {
@@ -276,11 +283,11 @@ struct Flat_array {
 	/**
 	 * Return the element. Does bounds-checking.
 	 */
-	T& operator[] (Size_t pos) {
+    __attribute__ ((noinline)) T& operator[] (Size_t pos) {
 		assert(0 <= pos and pos < size());
 		return *(begin() + pos);
 	}
-	T const& operator[] (Size_t pos) const {
+	__attribute__ ((noinline)) T const& operator[] (Size_t pos) const {
 		assert(0 <= pos and pos < size());
 		return *(begin() + pos);
 	}
@@ -337,6 +344,99 @@ struct Flat_array {
         return start and m_size();
     }
 };
+
+/**
+ * The same as Flat_array, but the offset is constant and the size part of the struct.
+ *   ... size  ...  element1 element2 ...
+ *         |          ^
+ *         +--offset--+
+ */
+template <typename T, typename _Size_t, int offset>
+struct Flat_array_const {
+    static_assert(offset > 0);
+	using Type = T;
+	using Size_t = _Size_t;
+
+    Size_t m_size;
+		
+	Flat_array_const(): m_size{0} {}
+	Flat_array_const(Buffer* containing) { init(containing); }
+    
+	/**
+	 * Initializes the Flat_array by having it point to the end of the
+	 * Buffer. The object must be contained in the Buffer!
+	 */
+	void init(Buffer* containing) {
+		assert(containing and containing->inside(this));
+		assert(offset == containing->end() - (char*)this);
+	}
+
+	Size_t size() const { return m_size; }
+
+	T* begin() { return (T*)((char*)this + offset); }
+	T* end()   { return begin() + size(); }
+	T const* begin() const { return (T*)((char*)this + offset); }
+	T const* end()   const { return begin() + size(); }
+
+    T& front() {assert(size()); return *begin();}
+    T& back()  {assert(size()); return end()[-1];}
+    T const& front() const {assert(size()); return *begin();}
+    T const& back()  const {assert(size()); return end()[-1];}
+
+	/**
+	 * Return the element. Does bounds-checking.
+	 */
+	T& operator[] (Size_t pos) {
+		assert(0 <= pos and pos < size());
+		return *(begin() + pos);
+	}
+	T const& operator[] (Size_t pos) const {
+		assert(0 <= pos and pos < size());
+		return *(begin() + pos);
+	}
+
+
+	/**
+	 * Insert an element at the back. The end of the list and the end of the
+	 * Buffer must be the same! This operation may invalidate all pointers to
+	 * the Buffer, including the one you use for this object!
+	 */
+	void push_back(T const& obj, Buffer* containing) {
+		assert(containing and containing->inside(this) and (void*)end() == (void*)containing->end());
+		assert(++m_size > 0); // be mindful of overflow
+		containing->emplace_back<T>(obj);
+	}
+	T& emplace_back(Buffer* containing) {
+		assert(containing and containing->inside(this) and (void*)end() == (void*)containing->end());
+		assert(++m_size > 0); // be mindful of overflow
+		return containing->emplace_back<T>();
+	}
+
+	/**
+	 * Count the number of objects equal to obj that are contained in this
+	 * array.
+	 */
+	int count(T const& obj) const {
+		int result = 0;
+		for (auto& i: *this)
+			if (i == obj) ++result;
+		return result;
+	}
+    
+	/**
+	 * Returns the smallest index containing an equal object or -1 of no such
+	 * object exists.
+	 */
+	int index(T const& obj) const {
+        for (int i = 0; i < size(); ++i) {
+            if ((*this)[i] == obj) return i;
+        }
+        return -1;
+	}
+
+    operator bool() const { return m_size; }
+};
+
 
 template <typename _Offset_t = u16, typename _Size_t = u8>
 struct Flat_array_ref_base {

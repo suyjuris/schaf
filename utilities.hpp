@@ -43,5 +43,7 @@ jup_str jup_printf(jup_str fmt, Args const&... args) {
     return {buf.data(), size};
 }
 
+jup_str nice_bytes(u64 bytes);
+
 
 } /* end of namespace jup */

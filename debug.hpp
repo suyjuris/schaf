@@ -4,6 +4,7 @@
 #include "buffer.hpp"
 #include "idmap.hpp"
 #include "parse_alarm.hpp"
+#include "graph.hpp"
 
 namespace jup {
 
@@ -214,6 +215,8 @@ op(Git_commit, type, hex(sha), hex(tree), parents)
 op(Git_tree, type, hex(sha), entries)
 op(Alarm_stream, in_fd, in_data, in_data_off, in_data_znext, in_data_zstate, \
     out_data, strings, state)
+op(Node, data_offset)
+op(Edge, other, weight)
 
 #undef op
 #undef display_obj

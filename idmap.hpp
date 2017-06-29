@@ -165,6 +165,13 @@ public:
         data.resize(2);
     }
 
+    void free() {
+        offsets.assign(32, 0);
+        offsets.shrink_to_fit();
+        data.free();
+        data.resize(2);
+    }
+
 	// Contains the data values
     Buffer data;
 	

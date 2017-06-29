@@ -27,3 +27,4 @@ doku/*
 build_files/
 stats
 **/*.pdb
+libwinpthread-1.dll

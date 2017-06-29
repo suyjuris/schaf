@@ -37,9 +37,9 @@
 
 #else
 
-#define assert(expr) ((expr) ? (void)0 : jup::_assert_fail(#expr, __FILE__, __LINE__))
-#define assert_errno(expr) ((expr) ? (void)0 : jup::_assert_errno_fail(#expr, __FILE__, __LINE__))
-#define assert_win(expr) ((expr) ? (void)0 : jup::_assert_win_fail(#expr, __FILE__, __LINE__))
+#define assert(expr) ((expr) ? (void)0 : ::jup::_assert_fail(#expr, __FILE__, __LINE__))
+#define assert_errno(expr) ((expr) ? (void)0 : ::jup::_assert_errno_fail(#expr, __FILE__, __LINE__))
+#define assert_win(expr) ((expr) ? (void)0 : ::jup::_assert_win_fail(#expr, __FILE__, __LINE__))
 
 #endif
 
@@ -72,6 +72,12 @@ template <typename T, typename R>
 inline void narrow(T& into, R from) {
 	into = static_cast<T>(from);
 	assert(static_cast<R>(into) == from and (into > 0) == (from > 0));
+}
+template <typename T, typename R>
+inline T narrow(R from) {
+	T result = static_cast<T>(from);
+	assert(static_cast<R>(result) == from and (result > 0) == (from > 0));
+    return result;
 }
 
 // Closes the program violently

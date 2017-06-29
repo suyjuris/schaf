@@ -228,7 +228,7 @@ int main(int argc, c_str const* argv) {
     init_signals();
     
     assert(argc == 2);
-    graph_exec_jobfile(argv[1]);
+    graph_exec_jobfile(argv[1], "");
     
 	return 0;
 }
