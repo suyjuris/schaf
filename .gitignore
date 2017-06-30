@@ -28,3 +28,4 @@ build_files/
 stats
 **/*.pdb
 libwinpthread-1.dll
+graph_data/

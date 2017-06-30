@@ -72,7 +72,7 @@ void die() {
     // version of msvcr without making pthreads segfault.
     //_set_abort_behavior(0, _WRITE_ABORT_MSG);
     
-    //CloseHandle(GetStdHandle(STD_ERROR_HANDLE));
+    CloseHandle(GetStdHandle(STD_ERROR_HANDLE));
     std::abort();
 }
 

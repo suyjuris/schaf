@@ -30,4 +30,20 @@ jup_str nice_bytes(u64 bytes) {
     }
 }
 
+
+jup_str nice_hex(Buffer_view data) {
+    tmp_buffer.resize(data.size() * 2 + 1);
+
+    for (int i = 0; i < data.size(); ++i) {
+        char c1 = (u8)data[i] >> 4;
+        char c2 = (u8)data[i] & 15;
+        c1 = c1 < 10 ? c1 + '0' : c1 - 10 + 'a';
+        c2 = c2 < 10 ? c2 + '0' : c2 - 10 + 'a';
+        tmp_buffer[2*i]     = c1;
+        tmp_buffer[2*i + 1] = c2;
+    }
+    tmp_buffer.back() = '\0';
+    return tmp_buffer;
+}
+
 } /* end of namespace jup */

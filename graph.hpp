@@ -34,5 +34,6 @@ struct Graph {
 };
 
 void graph_exec_jobfile(jup_str file, jup_str output);
+void graph_print_stats(jup_str input);
 
 } /* end of namespace jup */

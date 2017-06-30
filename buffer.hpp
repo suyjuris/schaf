@@ -308,6 +308,16 @@ public:
         return result;
     }
 
+    /**
+     * Take ownership of the memory, free the current memory, if any.
+     */
+    void take(void* memory, int size) {
+        free();
+        m_data = (char*)memory;
+        m_size = 0;
+        m_capacity = size;
+    }
+
 	int size() const { return m_size; }
 	int capacity() const {
 		// If in debug mode, the most-significant bit of m_capacity is serving
@@ -393,6 +403,11 @@ public:
 	char const* begin() const {return m_data;}
 	char const* end()   const {return m_data + m_size;}
 	char const* data()  const {return begin();}
+
+    char& front() { return (*this)[0]; }
+    char& back()  { return (*this)[size() - 1]; }
+    char  front() const { return (*this)[0]; }
+    char  back()  const { return (*this)[size() - 1]; }
 
     /**
 	 * Provide access to the buffer, with bounds checking.

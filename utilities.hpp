@@ -45,5 +45,12 @@ jup_str jup_printf(jup_str fmt, Args const&... args) {
 
 jup_str nice_bytes(u64 bytes);
 
+jup_str nice_hex(Buffer_view data);
+
+template <typename T>
+jup_str nice_hex(T const& obj) {
+    return nice_hex(Buffer_view::from_obj<T>(obj));
+}
+
 
 } /* end of namespace jup */

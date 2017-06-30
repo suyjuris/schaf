@@ -227,8 +227,11 @@ bool parse_cmdline(int argc, c_str const* argv, Server_options* into, bool no_re
 int main(int argc, c_str const* argv) {
     init_signals();
     
-    assert(argc == 2);
-    graph_exec_jobfile(argv[1], "");
+    if (argc == 3) {
+        graph_exec_jobfile(argv[1], argv[2]);
+    } else if (argc == 2) {
+        graph_print_stats(argv[1]);
+    }
     
 	return 0;
 }

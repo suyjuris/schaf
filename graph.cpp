@@ -1,5 +1,7 @@
 
 #include "libs/sparsehash.hpp"
+#include "libs/lz4.hpp"
+#include "libs/xxhash.hpp"
 
 #include "allocator.hpp"
 #include "array.hpp"
@@ -8,6 +10,8 @@
 #include "utilities.hpp"
 
 namespace jup {
+
+constexpr static jup_str SCHAFFILE_MAGIC = "^<k\x85";
 
 using Path_hash_t = u64;
 
@@ -53,167 +57,23 @@ struct Hasher_Edge_t {
     }
 };
 
-void _radix_sort_lsb(u64 *begin, u64 *end, u64 *begin1, u64 maxshift)
-{
-    u64 *end1 = begin1 + (end - begin);
-     
-    for (u64 shift = 0; shift <= maxshift; shift += 8)
-        {
-            size_t count[0x100] = {};
-            for (u64 *p = begin; p != end; p++)
-                count[(*p >> shift) & 0xFF]++;
-            u64 *bucket[0x100], *q = begin1;
-            for (int i = 0; i < 0x100; q += count[i++])
-                bucket[i] = q;
-            for (u64 *p = begin; p != end; p++)
-                *bucket[(*p >> shift) & 0xFF]++ = *p;
-            std::swap(begin, begin1);
-            std::swap(end, end1);
-        }
-}
-     
-void _radix_sort_msb(u64 *begin, u64 *end, u64 *begin1, u64 shift)
-{
-    size_t count[0x100] = {};
-    for (u64 *p = begin; p != end; p++)
-        count[(*p >> shift) & 0xFF]++;
-    u64 *bucket[0x100], *obucket[0x100], *q = begin1;
-    for (int i = 0; i < 0x100; q += count[i++])
-        obucket[i] = bucket[i] = q;
-    for (u64 *p = begin; p != end; p++)
-        *bucket[(*p >> shift) & 0xFF]++ = *p;
-    for (int i = 0; i < 0x100; ++i)
-        _radix_sort_lsb(obucket[i], bucket[i], begin + (obucket[i] - begin1), shift - 8);
-}
-
-void radix_sort(u64 *begin, u64 *end)
-{
-    assert(begin and end);
-    u64 *begin1 = new u64[end - begin];
-    _radix_sort_msb(begin, end, begin1, 56);
-    delete[] begin1;
-}
-
-void _radix_sort_lsb_(u64* begin, u64* begin1, u64 size, u64 shift)
-{
-    u64* end = begin + size;
-     
-    u64 count[256] = {0};
-    for (u64* p = begin; p != end; p++) {
-        count[(*p >> shift) & 0xFF]++;
-    }
-    u64* bucket[256], *q = begin1;
-    for (int i = 0; i < 256; ++i) {
-        bucket[i] = q;
-        q += count[i];
-    }
-    for (u64* p = begin; p != end; p++) {
-        *bucket[(*p >> shift) & 0xff]++ = *p;
+template <u8 offset, u8 shift>
+void radix_pass_lsb(u32 const* aux, u32* into, u32 size, u32* first) {
+    for (u32 i = 0; i < size; i += 3) {
+        u32 pos = 3 * first[(aux[i + offset] >> shift) & 0xff]++;
+        into[pos  ] = aux[i  ]; // node_a
+        into[pos+1] = aux[i+1]; // node_b
+        into[pos+2] = aux[i+2]; // weight
     }
 }
-     
-void radix_sort_(u64* begin, u64* end)
-{
-    assert(begin and end);
-    u64* begin1 = new u64[end - begin];
-
-    u64 count[0x100] = {};
-    for (u64* p = begin; p != end; p++) {
-        count[(*p >> 40) & 0xff] += 1;
+template <u8 offset, u8 shift>
+void radix_pass_lsb_last(u32 const* aux, u32* into, u32 size, u32* first, u32* offsets) {
+    for (u32 i = 0; i < size; i += 3) {
+        u32 pos = 2 * first[(aux[i + offset] >> shift) & 0xff]++;
+        offsets[aux[i] + 1] = pos/2+1;
+        into[pos  ] = aux[i+1]; // node_b
+        into[pos+1] = aux[i+2]; // weight
     }
-
-    u64* bucket[256];
-    u64* obucket[256];
-    u64* q = begin1;
-    for (int i = 0; i < 256; ++i) {
-        obucket[i] = bucket[i] = q;
-        q += count[i];
-    }
-
-    for (u64* p = begin; p != end; p++) {
-        *bucket[(*p >> 40) & 0xff]++ = *p;
-    }
-    
-    for (int i = 0; i < 0x100; ++i) {
-        u64 size = bucket[i] - obucket[i];
-        u64* obucket1_i = begin + (obucket[i] - begin1);
-        _radix_sort_lsb_(obucket[i], obucket1_i, size,  0);
-        _radix_sort_lsb_(obucket1_i, obucket[i], size,  8);
-        _radix_sort_lsb_(obucket[i], obucket1_i, size, 32);
-    }
-    
-    delete[] begin1;
-}
-
-
-void edge_sort_rec(u64* begin, u32 size, u32 nodes, u32* pointer_, u32* last) {
-    u32* pointer = pointer_ + 1;
-    std::memset(last, 0, nodes * sizeof(u32));
-    
-    for (u32 i = 0; i < size; ++i)
-        ++last[(u32)(begin[i] & 0xffffffffull)];
-
-    pointer[-1] = 0;
-    pointer[0]  = 0;
-    for (u32 i = 1; i < nodes; ++i) {
-        pointer[i] =  last[i-1];
-        last[i]    += last[i-1];
-    }
-    
-    for (u32 i = 0; i < nodes; ++i) {
-        while (pointer[i] != last[i]) {
-            u64 value = begin[pointer[i]];
-            u32 y = (u32)(value & 0xffffffffull);
-            while (i != y) {
-                u64 temp = begin[pointer[y]];
-                begin[pointer[y]++] = value;
-                value = temp;
-                y = (u32)(value & 0xffffffffull);
-            }
-            begin[pointer[i]++] = value;
-        }
-    }
-}
-
-void edge_sort(u64* begin, u32 size, u32 nodes) {
-    u32* pointer_ = new u32[nodes + 1];
-    u32* pointer_2 = new u32[nodes + 1];
-    u32* last = new u32[nodes] {0};
-    u32* pointer = pointer_ + 1;
-    
-    for (u32 i = 0; i < size; ++i)
-        ++last[(u32)(begin[i] >> 32)];
-
-    pointer[-1] = 0;
-    pointer[0]  = 0;
-    for (u32 i = 1; i < nodes; ++i) {
-        pointer[i] =  last[i-1];
-        last[i]    += last[i-1];
-    }
-    
-    for (u32 i = 0; i < nodes; ++i) {
-        while (pointer[i] != last[i]) {
-            u64 value = begin[pointer[i]];
-            u32 y = (u32)(value >> 32);
-            while (i != y) {
-                u64 temp = begin[pointer[y]];
-                begin[pointer[y]++] = value;
-                value = temp;
-                y = (u32)(value >> 32);
-            }
-            begin[pointer[i]++] = value;
-        }
-    }
-
-    /*
-    for (u32 i = 0; i < nodes; ++i) {
-        int len = pointer_[i+1] - pointer_[i];
-        //edge_sort_rec(begin + pointer_[i], len, nodes, pointer_2, last);
-        }*/
-    
-    delete last;
-    delete pointer_2;
-    delete pointer_;
 }
 
 using Map_commits_t = google::sparse_hash_map<Sha_t, Git_commit const*>;
@@ -326,7 +186,7 @@ static void calculate_diff(
     }
 }
 
-void graph_generate_single(Alarm_stream* stream) {
+void graph_generate_single(Alarm_stream* stream, std::ostream* out) {
     Map_commits_t commits;
     Map_trees_t trees;
     Arena_allocator arena;
@@ -386,7 +246,7 @@ void graph_generate_single(Alarm_stream* stream) {
             count_edges = 0;
             beg_c = now_c;
             
-            jout << jup_printf("Generating graph... (%5.2f%%, %.0f edges/s)", f, speed) << endl;
+            jout << jup_printf("Generating graph... (%5.2f%%, %.0f incr/s)", f, speed) << endl;
         }
         ++count_commits;
 
@@ -455,83 +315,209 @@ void graph_generate_single(Alarm_stream* stream) {
 
     Buffer graph_data;
     {
-    auto guard = graph_data.reserve_guard(Graph::total_space(nodes.size(), edges.size()));
-
     auto start_t = std::clock();
+    jout << "Packing graph... ";
+    jout.flush();
 
-    Graph& g = graph_data.emplace_back<Graph>();
+    u32 aux_size = edges.size() * 6;
+    u32* aux1 = new u32[aux_size];
+    u32* aux2 = new u32[aux_size];
+    u32* last_0  = new u32[256] {0};
+    u32* last_1  = new u32[256] {0};
+    u32* last_2  = new u32[256] {0};
+    u32* last_3  = new u32[256] {0};
 
-    g.nodes.init((u32)nodes.size() + 1, &graph_data);
-    g.edge_data.init(edges.size() * 2, &graph_data);
-    assert(g.num_nodes() == (int)nodes.size());
-    assert(g.num_edges() == (int)edges.size());
+    if (nodes.size() > 0xffff) {
+        {int i = 0;
+        for (auto it: edges) {
+            u32 node_a = (u32)(it.first >> 32);
+            u32 node_b = (u32)(it.first);
+            u32 weight = it.second;
 
-    static_assert(sizeof(Edge) == sizeof(u64));
-    Array_view_mut<u64> edge_data {(u64*)g.edge_data.begin(), (int)g.edge_data.size()};
+            ++last_0[ node_a        & 0xff];
+            ++last_1[(node_a >>  8) & 0xff];
+            ++last_2[(node_a >> 16) & 0xff];
+            ++last_3[(node_a >> 24) & 0xff];
+            ++last_0[ node_b        & 0xff];
+            ++last_1[(node_b >>  8) & 0xff];
+            ++last_2[(node_b >> 16) & 0xff];
+            ++last_3[(node_b >> 24) & 0xff];
+            aux1[i++] = node_a;
+            aux1[i++] = node_b;
+            aux1[i++] = weight;
+            aux1[i++] = node_b;
+            aux1[i++] = node_a;
+            aux1[i++] = weight;
+        }}
 
-    // The following algorithm is a bit tricky. First, we insert all edges (u, v) and (v, u)
-    // into the buffer, for all adjacent nodes (u, v) with u < v. Then, the buffer is sorted,
-    // which means that it contains all edges in the format
-    //     (u1, u1_1), (u1, u1_2), ..., (u1, u1_n1), (u2, u2_1), ...
-    // where u1 is the first node (with id 0), u1_1 is the first node adjacent to u1 (the one
-    // with the smallest id), u1_u1 is the last node adjacent to u1, and so on. This we replace
-    // with the following: (w(u, v) is the weight of edge (u, v))
-    //     (u1_1, w(u1, u1_1)), (u1_2, w(u1, u1_2)), ...
-    {int i = 0;
-    for (auto it: edges) {
-        u64 edge = it.first;
-        edge_data[i++] = edge;
-        edge_data[i++] = rotate_left<32>(edge);
+        edges.clear();
+
+        for (int j = 1; j < 256; ++j) {
+            last_0[j] += last_0[j-1];
+            last_1[j] += last_1[j-1];
+            last_2[j] += last_2[j-1];
+            last_3[j] += last_3[j-1];
+        } 
+
+        u32* first_0 = new u32[256];
+        u32* first_1 = new u32[256];
+        u32* first_2 = new u32[256];
+        u32* first_3 = new u32[256];
+
+        first_0[0] = 0; std::memcpy(first_0 + 1, last_0, sizeof(u32)*255);
+        first_1[0] = 0; std::memcpy(first_1 + 1, last_1, sizeof(u32)*255);
+        first_2[0] = 0; std::memcpy(first_2 + 1, last_2, sizeof(u32)*255);
+        first_3[0] = 0; std::memcpy(first_3 + 1, last_3, sizeof(u32)*255);
+
+        radix_pass_lsb<1, 0>(aux1, aux2, aux_size, first_0);
+        radix_pass_lsb<1, 8>(aux2, aux1, aux_size, first_1);  
+        radix_pass_lsb<1,16>(aux1, aux2, aux_size, first_2);  
+        radix_pass_lsb<1,24>(aux2, aux1, aux_size, first_3);
+
+        first_0[0] = 0; std::memcpy(first_0 + 1, last_0, sizeof(u32)*255);
+        first_1[0] = 0; std::memcpy(first_1 + 1, last_1, sizeof(u32)*255);
+        first_2[0] = 0; std::memcpy(first_2 + 1, last_2, sizeof(u32)*255);
+        first_3[0] = 0; std::memcpy(first_3 + 1, last_3, sizeof(u32)*255);
+
+        radix_pass_lsb<0, 0>(aux1, aux2, aux_size, first_0);
+        radix_pass_lsb<0, 8>(aux2, aux1, aux_size, first_1);  
+        radix_pass_lsb<0,16>(aux1, aux2, aux_size, first_2);  
+
+        graph_data.take(aux1, aux_size);
+        graph_data.reserve(Graph::total_space(nodes.size(), aux_size / 6));
+        Graph& g = graph_data.emplace_back<Graph>();
+
+        g.nodes.init((u32)nodes.size() + 1, &graph_data);
+        g.edge_data.init(aux_size / 3, &graph_data);
+        assert(g.num_nodes() == (int)nodes.size());
+        assert(g.num_edges() == (int)aux_size / 6);
+
+        static_assert(sizeof(Edge) == sizeof(u64));
+        u32* node_data = (u32*)g.nodes.begin();
+        u32* edge_data = (u32*)g.edge_data.begin();
+
+        radix_pass_lsb_last<0,24>(aux2, edge_data, aux_size, first_3, node_data);
+      
+        node_data[0] = 0;
+        for (u32 i = 1; i < g.nodes.size(); ++i) {
+            if (node_data[i] == 0) g.nodes[i] = g.nodes[i-1];
+        }
+ 
+        delete[] first_0;
+        delete[] first_1;
+        delete[] first_2;
+        delete[] first_3;
+    } else {    
+        {int i = 0;
+        for (auto it: edges) {
+            u32 node_a = (u32)(it.first >> 32);
+            u32 node_b = (u32)(it.first);
+            u32 weight = it.second;
+
+            ++last_0[ node_a        & 0xff];
+            ++last_1[(node_a >>  8) & 0xff];
+            ++last_0[ node_b        & 0xff];
+            ++last_1[(node_b >>  8) & 0xff];
+            aux1[i++] = node_a;
+            aux1[i++] = node_b;
+            aux1[i++] = weight;
+            aux1[i++] = node_b;
+            aux1[i++] = node_a;
+            aux1[i++] = weight;
+        }}
+
+        edges.clear();
+
+        for (int j = 1; j < 256; ++j) {
+            last_0[j] += last_0[j-1];
+            last_1[j] += last_1[j-1];
+        } 
+
+        u32* first_0 = new u32[256];
+        u32* first_1 = new u32[256];
+
+        first_0[0] = 0; std::memcpy(first_0 + 1, last_0, sizeof(u32)*255);
+        first_1[0] = 0; std::memcpy(first_1 + 1, last_1, sizeof(u32)*255);
+
+        radix_pass_lsb<1, 0>(aux1, aux2, aux_size, first_0);
+        radix_pass_lsb<1, 8>(aux2, aux1, aux_size, first_1);  
+
+        first_0[0] = 0; std::memcpy(first_0 + 1, last_0, sizeof(u32)*255);
+        first_1[0] = 0; std::memcpy(first_1 + 1, last_1, sizeof(u32)*255);
+
+        radix_pass_lsb<0, 0>(aux1, aux2, aux_size, first_0);
+
+        graph_data.take(aux1, aux_size);
+        graph_data.reserve(Graph::total_space(nodes.size(), aux_size / 6));
+        Graph& g = graph_data.emplace_back<Graph>();
+
+        g.nodes.init((u32)nodes.size() + 1, &graph_data);
+        g.edge_data.init(aux_size / 3, &graph_data);
+        assert(g.num_nodes() == (int)nodes.size());
+        assert(g.num_edges() == (int)aux_size / 6);
+
+        static_assert(sizeof(Edge) == sizeof(u64));
+        u32* node_data = (u32*)g.nodes.begin();
+        u32* edge_data = (u32*)g.edge_data.begin();
+
+        radix_pass_lsb_last<0,8>(aux2, edge_data, aux_size, first_1, node_data);
+       
+        node_data[0] = 0;
+        for (u32 i = 1; i < g.nodes.size(); ++i) {
+            if (node_data[i] == 0) g.nodes[i] = g.nodes[i-1];
+        }
+ 
+        delete[] first_0;
+        delete[] first_1;
     }
-    assert(i == edge_data.size());}
 
-    {
-    auto start_t = std::clock();
+    // aux1 is now owned by the buffer
+    delete[] aux2;
+    delete[] last_0;
+    delete[] last_1;
+    delete[] last_2;
+    delete[] last_3;
 
-    //std::sort(edge_data.begin(), edge_data.end());
-    radix_sort_(edge_data.begin(), edge_data.end());
-    //edge_sort(edge_data.begin(), edge_data.size(), nodes.size());
-    
-    float f = (float)(std::clock() - start_t) / (float)CLOCKS_PER_SEC;
-    jout << jup_printf("%.2f", f) << "s" << endl;
-    }
-
-    g.nodes[0].data_offset = 0;
-    for (int i = 0; i < edge_data.size(); ++i) {
-        u64 edge = edge_data[i];
-        u32 other = (u32)edge;
-        u32 node = (u32)(edge >> 32);
-        u32 weight = node > other ? edges[edge] : edges[rotate_left<32>(edge)];
-        g.nodes[node+1].data_offset = i+1;
-        g.edge_data[i].other  = other;
-        g.edge_data[i].weight = weight;
-    }
-    for (u32 i = 1; i < g.nodes.size(); ++i) {
-        if (g.nodes[i].data_offset == 0) g.nodes[i] = g.nodes[i-1];
-    }
-
-    float f = (float)(std::clock() - start_t) / (float)CLOCKS_PER_SEC;
+    {float f = (float)(std::clock() - start_t) / (float)CLOCKS_PER_SEC;
     u32 bytes = (u32)(graph_data.size() / f);
 
-    char hash[20];
-    SHA1(hash, graph_data.data(), graph_data.size());
-    char hash_str[8];
-    for (u32 i = 0; i < sizeof(hash_str) / 2; i += 1) {
-        char c1 = (u8)hash[i] >> 4;
-        char c2 = (u8)hash[i] & 15;
-        c1 = c1 < 10 ? c1 + '0' : c1 - 10 + 'a';
-        c2 = c2 < 10 ? c2 + '0' : c2 - 10 + 'a';
-        hash_str[2*i]     = c1;
-        hash_str[2*i + 1] = c2;
-    }
-    hash_str[7] = 0;
+    u64 hash_val = XXH64(graph_data.data(), graph_data.size(), 0);
     
-    jout << "Finalized graph representation (" << nice_bytes(graph_data.size()) << ", ";
+    jout << "Done. (" << nice_bytes(graph_data.size()) << ", ";
     jout << jup_printf("%.2f", f) << "s, ";
-    jout << nice_bytes(bytes) << "/s), SHA1: " << hash_str << endl;
+    jout << nice_bytes(bytes) << "/s)\nChecksum (xxHash64): ";
+    jout << nice_hex(hash_val) << endl;}
 
-    //graph_data.write_to_file("graph.out");
+    } {
+
+    auto start_t = std::clock();
+    jout << "Compressing graph... ";
+    jout.flush();
+    
+    Buffer lz4_data;
+    
+    lz4_data.emplace_back<u32>((u32)graph_data.size());
+    lz4_data.emplace_back<u32>();
+    int space_needed = LZ4_compressBound(graph_data.size());
+    assert(space_needed > 0 /* Graph is too big! */);
+    lz4_data.reserve_space(space_needed);
+
+    int lz4_size = LZ4_compress_default(
+        graph_data.data(), lz4_data.end(), graph_data.size(), lz4_data.space()
+    );
+    assert(lz4_size > 0);
+    lz4_data.get<u32>(4) = lz4_size;
+    lz4_data.addsize(lz4_size);
+    out->write(lz4_data.data(), lz4_data.size());
+    
+    float f = (float)(std::clock() - start_t) / (float)CLOCKS_PER_SEC;
+    u32 bytes = graph_data.size() / f;
+    jout << "Done. (" << nice_bytes(lz4_size) << ", ";
+    jout << jup_printf("%.2f", f) << "s, ";
+    jout << nice_bytes(bytes) << "/s)\n" << endl;
+    
     }
+    
 }
 
 void graph_exec_jobfile(jup_str file, jup_str output) {
@@ -593,6 +579,14 @@ void graph_exec_jobfile(jup_str file, jup_str output) {
     std::sort(repos.begin(), repos.end());
     int repo_count = 0;
 
+    std::ofstream out_stream {output.c_str(), std::ios::binary};
+    if (not out_stream) {
+        jerr << "Error: opening output file " << output.c_str() << " failed.\n";
+        die();
+    }
+
+    out_stream.write(SCHAFFILE_MAGIC.data(), SCHAFFILE_MAGIC.size());
+    
     for (auto file: files) {
         jout << "Opening file " << file << endl;
         auto stream = alarm_init(file);
@@ -604,7 +598,7 @@ void graph_exec_jobfile(jup_str file, jup_str output) {
             if (requested) {
                 jout << "Found repository " << repo.c_str() << endl;
             
-                graph_generate_single(&stream);
+                graph_generate_single(&stream, &out_stream);
                 if (++repo_count == repos.size()) {
                     jout << "All repositories found." << endl;
                     break;
@@ -624,7 +618,49 @@ void graph_exec_jobfile(jup_str file, jup_str output) {
     
     // Make sure they are allowed to deallocate
     repos.trap_alloc(false);
-    files.trap_alloc(false);        
+    files.trap_alloc(false);
+}
+
+void graph_print_stats(jup_str input) {
+    std::ifstream in_stream {input.c_str(), std::ios::binary};
+
+    char buf[8];
+    in_stream.read(buf, 4);
+    assert(in_stream and in_stream.gcount() == 4);
+    assert(std::memcmp(buf, SCHAFFILE_MAGIC.data(), 4) == 0);
+
+    Buffer lz4_data;
+    Buffer graph_data;
+    while (in_stream) {
+        in_stream.read(buf, 8);
+        if (in_stream.eof() and in_stream.gcount() == 0) break;
+        assert(in_stream and in_stream.gcount() == 8);
+        
+        u32 graph_size = *(u32*)buf;
+        u32 lz4_size = *((u32*)buf + 1);
+
+        lz4_data.resize(lz4_size);
+        in_stream.read(lz4_data.data(), lz4_data.size());
+        assert(in_stream and in_stream.gcount() == lz4_data.size());
+
+        graph_data.resize(graph_size);
+        int n = LZ4_decompress_safe(
+            lz4_data.data(), graph_data.data(), lz4_data.size(), graph_data.size()
+        );
+        assert(n > 0 and n == graph_data.size());
+
+        Graph const& g = graph_data.get<Graph>();
+        u64 hash_val = XXH64(graph_data.data(), graph_data.size(), 0);
+        u64 max_edges =  g.num_nodes() * (g.num_nodes() - 1);
+        float density = (float)g.num_edges() / (float)max_edges;
+    
+        jout << "Number of nodes: " << g.num_nodes() << "\nNumber of edges: " << g.num_edges()
+             << "\nGraph density: " << jup_printf("%.2f", density) << "%\nChecksum (xxHash64): ";
+        jout << nice_hex(hash_val) << "\nUncompressed size: " << graph_data.size() << " (";
+        jout << nice_bytes(graph_data.size()) << ")\nCompressed size: " << lz4_data.size() << " (";
+        jout << nice_bytes(lz4_data.size()) << ")\n" << endl;
+    }
+    
 }
 
 } /* end of namespace jup */

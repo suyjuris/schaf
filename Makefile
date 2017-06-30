@@ -12,7 +12,7 @@ CPPFLAGS = -std=c++1z
 LDFLAGS  = -Wall
 
 ifdef SCHAF_FAST
-  CXXFLAGS += -O3
+  CXXFLAGS += -O3 -march=native
   CPPFLAGS += -DNDEBUG
 else
   CXXFLAGS += -Og
