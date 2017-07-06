@@ -283,11 +283,11 @@ struct Flat_array {
 	/**
 	 * Return the element. Does bounds-checking.
 	 */
-    __attribute__ ((noinline)) T& operator[] (Size_t pos) {
+    T& operator[] (Size_t pos) {
 		assert(0 <= pos and pos < size());
 		return *(begin() + pos);
 	}
-	__attribute__ ((noinline)) T const& operator[] (Size_t pos) const {
+	T const& operator[] (Size_t pos) const {
 		assert(0 <= pos and pos < size());
 		return *(begin() + pos);
 	}

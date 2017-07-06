@@ -81,7 +81,7 @@ inline T narrow(R from) {
 }
 
 // Closes the program violently
-[[noreturn]] void die();
+[[noreturn]] void die(); // implemented in system_win32.cpp
 [[noreturn]] void die(c_str msg, int code = 0);
 
 // Registers a signal handler to print things nicely

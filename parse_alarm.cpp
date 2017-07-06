@@ -354,8 +354,8 @@ Flat_list<Git_object, u32, u32> const& alarm_parse(Alarm_stream* stream) {
     stream->out_data.reset();
     stream->out_data.reserve(Alarm_stream::BUFFER_SIZE_OUT);
     
-    auto& result = stream->out_data.emplace<Flat_list<Git_object, u32, u32>>();
-    result.init(&stream->out_data);
+    auto* result = &stream->out_data.emplace<Flat_list<Git_object, u32, u32>>();
+    result->init(&stream->out_data);
 
     if (stream->state == Alarm_stream::PARSE_INIT) {
         stream_min(stream, 12);
@@ -375,13 +375,13 @@ Flat_list<Git_object, u32, u32> const& alarm_parse(Alarm_stream* stream) {
         parse_header(stream, &type, &size);
 
         if (stream->out_data.space() < (int)size + 32) {
-            if (result.size() == 0) {
-                jerr << "Error: Not enough space in buffer for object (type: " << get_type_str(type)
-                     << "). Need " << size << ", got " << stream->out_data.capacity() << ".\n";
-                die();
+            if (result->size() == 0) {
+                stream->out_data.reserve(size + 32);
+                result = &stream->out_data.get<Flat_list<Git_object, u32, u32>>();
+            } else {
+                stream->in_data_off = offset;
+                break;
             }
-            stream->in_data_off = offset;
-            break;
         }
 
         if (type == Git_object::OBJ_NONE) {
@@ -390,7 +390,7 @@ Flat_list<Git_object, u32, u32> const& alarm_parse(Alarm_stream* stream) {
             stream->state = Alarm_stream::REPO;
             break;
         } else if (type == Git_object::OBJ_COMMIT) {
-            auto& commit = result.emplace_back<Git_commit>(&stream->out_data);
+            auto& commit = result->emplace_back<Git_commit>(&stream->out_data);
             commit.type = type;
             
             hash_init(stream, type, size);
@@ -420,7 +420,7 @@ Flat_list<Git_object, u32, u32> const& alarm_parse(Alarm_stream* stream) {
 
             ++stream->num_commits;
         } else if (type == Git_object::OBJ_TREE) {
-            auto& tree = result.emplace_back<Git_tree>(&stream->out_data);
+            auto& tree = result->emplace_back<Git_tree>(&stream->out_data);
             tree.type = type;
             
             hash_init(stream, type, size);
@@ -449,7 +449,13 @@ Flat_list<Git_object, u32, u32> const& alarm_parse(Alarm_stream* stream) {
                 case 0100755: entry.mode = Git_tree_Entry::BLOB_EXE;   break;
                 case 0120000: entry.mode = Git_tree_Entry::SYMLINK;    break;
                 case 0160000: entry.mode = Git_tree_Entry::GITLINK;    break;
-                default: assert(false); break;
+                    
+                // Not standard, but observed in the wild
+                case 0100777: entry.mode = Git_tree_Entry::BLOB_EXE;   break;
+                    
+                default:
+                    jerr << "Warning: Unknown mode " << nice_oct(mode) << "\n";
+                    entry.mode = Git_tree_Entry::BLOB; break;
                 }
 
                 int i = 0;
@@ -481,7 +487,7 @@ Flat_list<Git_object, u32, u32> const& alarm_parse(Alarm_stream* stream) {
             assert(false);
         }
     }
-    return result;
+    return *result;
 }
 
 void alarm_close(Alarm_stream* stream) {

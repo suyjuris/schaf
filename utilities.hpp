@@ -21,6 +21,10 @@ void* tmp_alloc(int size);
  */
 Buffer& tmp_alloc_buffer();
 
+template <typename T>
+T&& string_unpacker(T&& obj) { return obj; }
+inline c_str string_unpacker(jup_str obj) { return obj.c_str(); }
+
 /**
  * Like sprintf, but uses tmp_alloc for memory.
  */
@@ -29,14 +33,14 @@ jup_str jup_printf(jup_str fmt, Args const&... args) {
     auto& buf = tmp_alloc_buffer();
 
     errno = 0;
-    int size = std::snprintf(buf.data(), buf.capacity(), fmt.c_str(), args...);
+    int size = std::snprintf(buf.data(), buf.capacity(), fmt.c_str(), string_unpacker(args)...);
     assert_errno(errno == 0);
     
     if (size >= buf.capacity()) {
         buf.reserve(size + 1);
 
         errno = 0;
-        int size = std::snprintf(buf.data(), buf.capacity(), fmt.c_str(), args...);
+        int size = std::snprintf(buf.data(), buf.capacity(), fmt.c_str(), string_unpacker(args)...);
         assert_errno(errno == 0);
         assert(size < buf.capacity());
     }
@@ -45,12 +49,24 @@ jup_str jup_printf(jup_str fmt, Args const&... args) {
 
 jup_str nice_bytes(u64 bytes);
 
+jup_str nice_oct(Buffer_view data, bool swap = false);
 jup_str nice_hex(Buffer_view data);
 
+template <typename T>
+jup_str nice_oct(T const& obj) {
+    return nice_oct(Buffer_view::from_obj<T>(obj), true);
+}
 template <typename T>
 jup_str nice_hex(T const& obj) {
     return nice_hex(Buffer_view::from_obj<T>(obj));
 }
+
+void print_wrapped(std::ostream& out, jup_str str);
+
+extern std::ostream& jnull;
+
+extern jup_str jup_stoi_messages[];
+u8 jup_stoi(jup_str str, int* val);
 
 
 } /* end of namespace jup */

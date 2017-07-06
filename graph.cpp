@@ -8,6 +8,7 @@
 #include "graph.hpp"
 #include "debug.hpp"
 #include "utilities.hpp"
+#include "options.hpp"
 
 namespace jup {
 
@@ -186,7 +187,7 @@ static void calculate_diff(
     }
 }
 
-void graph_generate_single(Alarm_stream* stream, std::ostream* out) {
+void graph_generate_single(Alarm_stream* stream, jup_str repo, std::ostream* out) {
     Map_commits_t commits;
     Map_trees_t trees;
     Arena_allocator arena;
@@ -226,11 +227,6 @@ void graph_generate_single(Alarm_stream* stream, std::ostream* out) {
     auto start_t = std::clock();
     auto beg_c   = start_t;
     auto beg_t   = std::time(nullptr);
-
-    /*
-    constexpr static int hist_changed_size = 20;
-    int hist_changed[32] = {0};
-    */
     
     for (auto const& it: commits) {
         if (it.second->parents.size() != 1) continue;
@@ -257,19 +253,18 @@ void graph_generate_single(Alarm_stream* stream, std::ostream* out) {
         
         calculate_diff(0, tree1, tree2, trees, &changed);
 
-        int n = changed.size();
-        count_edges += n*(n-1) / 2;
-
-        /*
-        if (n) {
-            int i = 31 - __builtin_clz(n);
-            ++hist_changed[i];
+        s64 n = changed.size();
+        if (n*(n-1) / 2 > global_options.graph_max_edges) {
+            jout << "Info: Skipping graph due to max edge limit of "
+                 << global_options.graph_max_edges << " edges.\n" << endl;
+            return;
         }
-        */
-        
-        if (n > 1000 and (int)edges.size() < n*(n-1) / 2) {
+
+        if (n > 1000 and (s64)edges.size() < n*(n-1) / 2) {
             edges.resize(n*(n-1) / 2);
         }
+        
+        count_edges += n*(n-1) / 2;
 
         for (auto& i: changed) {
             i = nodes.insert({i, nodes.size()}).first->second;
@@ -285,35 +280,27 @@ void graph_generate_single(Alarm_stream* stream, std::ostream* out) {
                 edges[node_i | node_j] += 1;
             }
         }
+
+        if ((int)edges.size() > global_options.graph_max_edges) {
+            jout << "Info: Skipping graph due to max edge limit of "
+                 << global_options.graph_max_edges << " edges.\n" << endl;
+            return;
+        }
+    }
+    
+    if ((int)edges.size() < global_options.graph_min_edges) {
+        jout << "Info: Skipping graph due to min edge limit of "
+             << global_options.graph_min_edges << " edges.\n" << endl;
+        return;
     }
 
     float f = (float)(std::clock() - start_t) / (float)CLOCKS_PER_SEC;
     jout << jup_printf("Finished in %.2fs.\n", f);
     jout << "The graph has " << nodes.size() << " nodes and " << edges.size() << " edges." << endl;
     }
-
-
-    /*
-    jout << "Histogram of commit change count:\n  exp      n_changes\n";
-    for (int i = 0; i < hist_changed_size; ++i) {
-        jout << jup_printf("  %3d %12d\n", i, hist_changed[i]);
-    }
-    jout.flush();
-
     
-    constexpr static int hist_edge_size = 16;
-    int hist_edge[hist_edge_size] = {0};
-    for (auto const& i: edges) {
-        if (i.second <= hist_edge_size) ++hist_edge[i.second - 1];
-    }
-    jout << "Histogram of edge weights:\n  val      n_nodes\n";
-    for (int i = 0; i < hist_edge_size; ++i) {
-        jout << jup_printf("  %3d %12d\n", i+1, hist_edge[i]);
-    }
-    jout.flush();
-    */
-
     Buffer graph_data;
+    
     {
     auto start_t = std::clock();
     jout << "Packing graph... ";
@@ -384,9 +371,15 @@ void graph_generate_single(Alarm_stream* stream, std::ostream* out) {
         radix_pass_lsb<0,16>(aux1, aux2, aux_size, first_2);  
 
         graph_data.take(aux1, aux_size);
-        graph_data.reserve(Graph::total_space(nodes.size(), aux_size / 6));
+        auto guard = graph_data.reserve_guard(
+            Graph::total_space(repo.size(), nodes.size(), aux_size / 6)
+        );
+        graph_data.trap_alloc(true);
         Graph& g = graph_data.emplace_back<Graph>();
 
+        g.name.init(&graph_data);
+        for (char c: repo) g.name.push_back(c, &graph_data);
+        g.name.push_back('\0', &graph_data);
         g.nodes.init((u32)nodes.size() + 1, &graph_data);
         g.edge_data.init(aux_size / 3, &graph_data);
         assert(g.num_nodes() == (int)nodes.size());
@@ -448,9 +441,14 @@ void graph_generate_single(Alarm_stream* stream, std::ostream* out) {
         radix_pass_lsb<0, 0>(aux1, aux2, aux_size, first_0);
 
         graph_data.take(aux1, aux_size);
-        graph_data.reserve(Graph::total_space(nodes.size(), aux_size / 6));
+        auto guard = graph_data.reserve_guard(
+            Graph::total_space(repo.size(), nodes.size(), aux_size / 6)
+        );
         Graph& g = graph_data.emplace_back<Graph>();
 
+        g.name.init(&graph_data);
+        for (char c: repo) g.name.push_back(c, &graph_data);
+        g.name.push_back('\0', &graph_data);
         g.nodes.init((u32)nodes.size() + 1, &graph_data);
         g.edge_data.init(aux_size / 3, &graph_data);
         assert(g.num_nodes() == (int)nodes.size());
@@ -471,7 +469,7 @@ void graph_generate_single(Alarm_stream* stream, std::ostream* out) {
         delete[] first_1;
     }
 
-    // aux1 is now owned by the buffer
+    // aux1 is now owned by the buffer, this is not a leak
     delete[] aux2;
     delete[] last_0;
     delete[] last_1;
@@ -517,6 +515,8 @@ void graph_generate_single(Alarm_stream* stream, std::ostream* out) {
     jout << nice_bytes(bytes) << "/s)\n" << endl;
     
     }
+
+    graph_data.trap_alloc(false);
     
 }
 
@@ -594,11 +594,13 @@ void graph_exec_jobfile(jup_str file, jup_str output) {
             auto repo = alarm_repo(&stream);
             if (not repo.size()) break;
 
-            bool requested = std::binary_search(repos.begin(), repos.end(), repo);
-            if (requested) {
+            auto repo_it = std::lower_bound(repos.begin(), repos.end(), repo);
+            if (repo_it != repos.end() and repo == *repo_it) {
                 jout << "Found repository " << repo.c_str() << endl;
             
-                graph_generate_single(&stream, &out_stream);
+                // repo may be invalidated by subsequent calls to alarm_parse inside
+                // graph_generate_single. Avoid this by using the data inside repos.
+                graph_generate_single(&stream, *repo_it, &out_stream);
                 if (++repo_count == repos.size()) {
                     jout << "All repositories found." << endl;
                     break;
@@ -621,7 +623,185 @@ void graph_exec_jobfile(jup_str file, jup_str output) {
     files.trap_alloc(false);
 }
 
-void graph_print_stats(jup_str input) {
+struct Dist_metrics {
+    u32   min    = 0;
+    u32   max    = 0;
+    u32   median = 0;
+    float mean   = 0;
+    float stddev = 0;
+};
+
+template <typename T>
+static void insertion_sort(Array_view_mut<T> data) {
+    for (int i = 1; i < data.size(); ++i) {
+        T tmp = data[i];
+        int j;
+        for (j = i; j > 0 and data[j-1] > tmp; --j) {
+            data[j] = data[j-1];
+        }
+        data[j] = tmp;
+    }
+}
+
+template <typename T>
+static T find_median(Array_view_mut<T> data) {
+    std::sort(data.begin(), data.end());
+    return data[data.size() / 2];
+}
+
+static u8 median_bound(Array_view_mut<u32> data, u8* lower, u32* k) {
+    assert(lower and k);
+
+    u32* last_0 = new u32[256] {0};
+    u32* last_1 = new u32[256] {0};
+    u32* last_2 = new u32[256] {0};
+    u32* last_3 = new u32[256] {0};
+    for (u32 val: data) {
+        ++last_0[ val        & 0xff];
+        ++last_1[(val >>  8) & 0xff];
+        ++last_2[(val >> 16) & 0xff];
+        ++last_3[(val >> 24) & 0xff];
+    }
+
+    u8 result;
+    if (last_3[0] != (u32)data.size()) {
+        u32 sum = 0;
+        for (int j = 0; j < 256; ++j) {
+            sum += last_3[j];
+            if (sum > *k) {
+                *lower = j;
+                *k -= sum - last_3[j];
+                break;
+            }
+        }
+        result = 3;
+    } else if (last_2[0] != (u32)data.size()) {
+        u32 sum = 0;
+        for (int j = 0; j < 256; ++j) {
+            sum += last_2[j];
+            if (sum > *k) {
+                *lower = j;
+                *k -= sum - last_2[j];
+                break;
+            }
+        }
+        result = 2;
+    } else if (last_1[0] != (u32)data.size()) {
+        u32 sum = 0;
+        for (int j = 0; j < 256; ++j) {
+            sum += last_1[j];
+            if (sum > *k) {
+                *lower = j;
+                *k -= sum - last_1[j];
+                break;
+            }
+        }
+        result = 1;
+    } else {
+        u32 sum = 0;
+        for (int j = 0; j < 256; ++j) {
+            sum += last_0[j];
+            if (sum > *k) {
+                *lower = j;
+                *k -= sum - last_0[j];
+                break;
+            }
+        }
+        result = 0;
+    }
+
+    delete[] last_0;
+    delete[] last_1;
+    delete[] last_2;
+    delete[] last_3;
+    return result;
+}
+
+template <u8 shift>
+static void median_bound_copy(Array_view_mut<u32> data, u32 prefix, u8* lower, u32* size, u32* k) {
+    assert(lower and size and k);
+
+    u32* last = new u32[256] {0};
+    u32 count = 0;
+    for (u32 i = 0; i < (u32)data.size(); ++i) {
+        bool mask = (data[i] >> (shift+8)) == prefix;
+        last[(data[i] >> shift) & 0xff] += mask;
+        data[count] = data[i];
+        count += mask;
+    }
+    u32 sum = 0;
+    for (int j = 0; j < 256; ++j) {
+        sum += last[j];
+        if (sum > *k) {
+            *lower = j;
+            *k -= sum - last[j];
+            break;
+        }
+    }
+    *size = count;
+    
+    delete[] last;
+}
+
+static u32 find_median_radix(Array_view_mut<u32> data) {
+    u8 lower = 0;
+    u32 size = 0, pre = 0, k = data.size() / 2;
+    
+    u8 byte = median_bound(data, &lower, &k); pre = lower;
+    if (byte == 3) {
+        median_bound_copy<16>(data, pre, &lower, &size, &k); pre = (pre << 8) | lower;
+        median_bound_copy<8>(data.subview(0, size), pre, &lower, &size, &k); pre = (pre << 8) | lower;
+        median_bound_copy<0>(data.subview(0, size), pre, &lower, &size, &k); pre = (pre << 8) | lower;
+    } else if (byte == 2) {
+        median_bound_copy<8>(data, pre, &lower, &size, &k); pre = (pre << 8) | lower;
+        median_bound_copy<0>(data.subview(0, size), pre, &lower, &size, &k); pre = (pre << 8) | lower;
+    } else if (byte == 1) {
+        median_bound_copy<0>(data, pre, &lower, &size, &k); pre = (pre << 8) | lower;
+    }
+    return pre;
+}
+
+static Dist_metrics metrics_calculate(Array_view_mut<u32> data) {
+    Dist_metrics result;
+
+    if (not data.size()) return result;
+
+    result.min = data.front();
+    result.max = data.front();
+    
+    {u32 sum = 0;
+    for (u32 i: data) {
+        sum += i;
+        if (i < result.min) result.min = i;
+        if (i > result.max) result.max = i;
+    }
+    result.mean = (float)sum / (float)data.size();}
+    
+    {float var = 0;
+    for (u32 i: data) {
+        float f = (float)i - result.mean;
+        var += f * f;
+    }
+    result.stddev = std::sqrt(var / (float)data.size());}
+
+    result.median = find_median_radix(data);
+
+    return result;
+}
+
+static void metrics_print_header(std::ostream& out_data, jup_str prefix) {
+    out_data << prefix << "_min " << prefix << "_max " << prefix << "_median "
+             << prefix << "_mean " << prefix << "_stddev ";
+}
+static void metrics_print(std::ostream& out_nice, std::ostream& out_data, Dist_metrics const& metrics) {
+    out_nice << "min " << metrics.min << ", max " << metrics.max << ", median " << metrics.median
+             << ", mean " << jup_printf("%.2f", metrics.mean);
+    out_nice << ", stddev: " << jup_printf("%.2f", metrics.stddev) << endl;
+    out_data << metrics.min << " " << metrics.max << " " << metrics.median << " " << metrics.mean
+             << " " << metrics.stddev << " ";
+}
+
+void graph_print_stats(jup_str input, jup_str output) {
     std::ifstream in_stream {input.c_str(), std::ios::binary};
 
     char buf[8];
@@ -629,9 +809,25 @@ void graph_print_stats(jup_str input) {
     assert(in_stream and in_stream.gcount() == 4);
     assert(std::memcmp(buf, SCHAFFILE_MAGIC.data(), 4) == 0);
 
+    std::ostream* out;
+    std::ofstream out_file;
+    if (output) {
+        out_file.open(output.c_str());
+        out = &out_file;
+    } else {
+        out = &jnull;
+    }
+
+    *out << "name num_nodes num_edges density checksum byte_size byte_size_compressed ";
+    metrics_print_header(*out, "degree");
+    metrics_print_header(*out, "weight");
+    *out << endl;
+    
     Buffer lz4_data;
     Buffer graph_data;
     while (in_stream) {
+        auto beg_t = std::clock();
+
         in_stream.read(buf, 8);
         if (in_stream.eof() and in_stream.gcount() == 0) break;
         assert(in_stream and in_stream.gcount() == 8);
@@ -650,15 +846,49 @@ void graph_print_stats(jup_str input) {
         assert(n > 0 and n == graph_data.size());
 
         Graph const& g = graph_data.get<Graph>();
+
+        {
         u64 hash_val = XXH64(graph_data.data(), graph_data.size(), 0);
+
         u64 max_edges =  g.num_nodes() * (g.num_nodes() - 1);
         float density = (float)g.num_edges() / (float)max_edges;
-    
+
+        jout << "Name: " << g.name.begin() << '\n';
         jout << "Number of nodes: " << g.num_nodes() << "\nNumber of edges: " << g.num_edges()
              << "\nGraph density: " << jup_printf("%.2f", density) << "%\nChecksum (xxHash64): ";
         jout << nice_hex(hash_val) << "\nUncompressed size: " << graph_data.size() << " (";
         jout << nice_bytes(graph_data.size()) << ")\nCompressed size: " << lz4_data.size() << " (";
-        jout << nice_bytes(lz4_data.size()) << ")\n" << endl;
+        jout << nice_bytes(lz4_data.size()) << ")\n";
+
+        *out << "\"" << g.name.begin() << "\" " << g.num_nodes() << " " << g.num_edges() << " "
+             << density << " " << hash_val << " " << graph_data.size() << " "
+             << lz4_data.size() << " ";
+        }
+
+        {Array<u32> degrees;
+        degrees.resize(g.num_nodes());
+        for (u32 i = 0; i < (u32)g.num_nodes(); ++i) {
+            degrees[i] = g.nodes[i+1].data_offset - g.nodes[i].data_offset;
+        }
+        auto metric = metrics_calculate(degrees);
+        jout << "Degrees: ";
+        metrics_print(jout, *out, metric);}
+
+        {u32* arr = (u32*)g.edge_data.begin();
+        for (u32 i = 0; i < g.edge_data.size(); ++i) {
+            arr[i] = g.edge_data[i].weight;
+        }
+        // Each weight is in there twice, but that is irrelevant
+        auto metric = metrics_calculate({arr, (int)g.edge_data.size()});
+        jout << "Weights: ";
+        metrics_print(jout, *out, metric);
+        *out << endl;}
+
+
+        float f = (float)(std::clock() - beg_t) / (float)CLOCKS_PER_SEC;
+        jout << jup_printf("Done. (%.2fs)\n", f) << endl;
+        
+        // The graph is now unusable.
     }
     
 }

@@ -63,6 +63,13 @@ public:
         m_data.append(Buffer_view::from_obj(obj));
     }
 
+    T pop_back() {
+        assert(size() > 0);
+        T result = back();
+        addsize(-1);
+        return result;
+    }
+
 	T* begin() {return (T*)m_data.begin(); }
 	T* end()   {return (T*)m_data.end(); }
 	T* data()  {return begin();}
@@ -83,6 +90,10 @@ public:
 		assert(0 <= pos and pos < size());
 		return data()[pos];
 	}
+
+    operator bool() const {
+        return size() != 0;
+    }
     
     Buffer m_data;
 };
@@ -105,10 +116,18 @@ struct Array_view {
 	constexpr T const* end()   const { return m_data + m_size; }
 	constexpr T const* data()  const { return begin(); }
 
+    T const& front() const { return (*this)[0]; }
+    T const& back() const { return (*this)[size() - 1]; }
+    
 	T const& operator[] (int pos) const {
 		assert(0 <= pos and pos < size());
 		return data()[pos];
 	}
+
+    Array_view<T> subview(int pos, int size_) const {
+        assert(0 <= pos and pos + size_ <= size());
+        return {data() + pos, size_};
+    }
 
     Buffer_view as_bytes() const {
         return {data(), size() * sizeof(T)};
@@ -147,11 +166,19 @@ struct Array_view_mut {
 	T* end()   { return m_data + m_size; }
     T* data()  { return begin(); }
 
+    T& front() { return (*this)[0]; }
+    T& back() { return (*this)[size() - 1]; }
+    
 	T& operator[] (int pos) {
 		assert(0 <= pos and pos < size());
 		return data()[pos];
 	}
 
+    Array_view_mut<T> subview(int pos, int size_) {
+        assert(0 <= pos and pos + size_ <= size());
+        return {data() + pos, size_};
+    }
+    
     Buffer_view as_bytes() const {
         return {data(), size() * sizeof(T)};
     }

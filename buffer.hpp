@@ -51,6 +51,9 @@ struct Buffer_view {
 	constexpr char const* end()   const { return (char const*)m_data + m_size; }
 	constexpr char const* data()  const { return begin(); }
 
+    char front() const { return (*this)[0]; }
+    char back()  const { return (*this)[size() - 1]; }
+
 	/**
 	 * Provide access to the bytes, with bounds checking.
 	 */
