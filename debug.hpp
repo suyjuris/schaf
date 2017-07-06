@@ -52,10 +52,15 @@ struct Debug_ostream {
     Debug_ostream(std::ostream& out): out{out} {}
 
     template <typename... Args>
-    Debug_ostream& printf(c_str fmt, Args const&... args) {
+    Debug_ostream& printf(char const* fmt, Args const&... args) {
         buf.reserve(256);
         while (true) {
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wformat-security"
             int count = std::snprintf(buf.data(), buf.capacity(), fmt, args...);
+#pragma GCC diagnostic pop
+
             assert(count >= 0);
             if (count < buf.capacity()) break;
             buf.reserve(count);
@@ -106,15 +111,15 @@ template <typename T> struct Hex { T const& value; };
 template <typename T> auto make_hex(T const& obj) { return Hex<T> {obj}; }
 
 template <typename T> struct Hex_fmt;
-template <> struct Hex_fmt<u8>  { static constexpr c_str fmt = "0x%.2hhx"; };
-template <> struct Hex_fmt<s8>  { static constexpr c_str fmt = "0x%.2hhx"; };
-template <> struct Hex_fmt<u16> { static constexpr c_str fmt = "0x%.4hx"; };
-template <> struct Hex_fmt<s16> { static constexpr c_str fmt = "0x%.4hx"; };
-template <> struct Hex_fmt<u32> { static constexpr c_str fmt = "0x%.8x"; };
-template <> struct Hex_fmt<s32> { static constexpr c_str fmt = "0x%.8x"; };
-template <> struct Hex_fmt<u64> { static constexpr c_str fmt = "0x%.16I64x"; };
-template <> struct Hex_fmt<s64> { static constexpr c_str fmt = "0x%.16I64x"; };
-template <typename T> struct Hex_fmt<T*> { static constexpr c_str fmt = "%p"; };
+template <> struct Hex_fmt<u8>  { static constexpr char const* fmt = "0x%.2hhx"; };
+template <> struct Hex_fmt<s8>  { static constexpr char const* fmt = "0x%.2hhx"; };
+template <> struct Hex_fmt<u16> { static constexpr char const* fmt = "0x%.4hx"; };
+template <> struct Hex_fmt<s16> { static constexpr char const* fmt = "0x%.4hx"; };
+template <> struct Hex_fmt<u32> { static constexpr char const* fmt = "0x%.8x"; };
+template <> struct Hex_fmt<s32> { static constexpr char const* fmt = "0x%.8x"; };
+template <> struct Hex_fmt<u64> { static constexpr char const* fmt = "0x%.16I64x"; };
+template <> struct Hex_fmt<s64> { static constexpr char const* fmt = "0x%.16I64x"; };
+template <typename T> struct Hex_fmt<T*> { static constexpr char const* fmt = "%p"; };
 
 template <typename T>
 inline Debug_ostream& operator< (Debug_ostream& out, Hex<T> h) {
@@ -169,7 +174,7 @@ template <typename T>
 Debug_ostream& operator< (Debug_ostream& out, T const& obj) {
 	out.out << obj << ' '; return out;
 }
-inline Debug_ostream& operator< (Debug_ostream& out, c_str s) {
+inline Debug_ostream& operator< (Debug_ostream& out, char const* s) {
 	return out.printf(s);
 }
 inline Debug_ostream& operator< (Debug_ostream& out, double d) {

@@ -128,7 +128,7 @@ void print_wrapped(std::ostream& out, jup_str str) {
 
 class Dummy_streambuf: public std::streambuf {
 public:
-    std::streamsize xsputn (c_str str, std::streamsize n) override {
+    std::streamsize xsputn (char const* str, std::streamsize n) override {
         return n;
     }
     int overflow (int c) override {

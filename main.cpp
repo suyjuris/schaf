@@ -5,7 +5,7 @@
 
 using namespace jup;
 
-int main(int argc, c_str const* argv) {
+int main(int argc, char const* const* argv) {
     init_signals();
 
     Array<jup_str> argv_arr;

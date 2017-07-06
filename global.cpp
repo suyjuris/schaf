@@ -4,20 +4,20 @@ namespace jup {
 std::ostream& jout = std::cout;
 std::ostream& jerr = std::cerr;
 
-void _assert_fail(c_str expr_str, c_str file, int line) {
+void _assert_fail(char const* expr_str, char const* file, int line) {
     jerr << "\nError: Assertion failed. File: " << file << ", Line " << line
          << "\n\nExpression: " << expr_str << "\n";
     die();
 }
 
-void _assert_errno_fail(c_str expr_str, c_str file, int line) {
+void _assert_errno_fail(char const* expr_str, char const* file, int line) {
     auto err = errno;
     char const* msg = std::strerror(err);
     err_msg(msg, err);
     _assert_fail(expr_str, file, line);
 }
 
-void err_msg(c_str msg, int err) {
+void err_msg(char const* msg, int err) {
     int l = std::strlen(msg);
     while (l and (msg[l-1] == '\n' or msg[l-1] == '\x0d')) --l;
     jerr << "Error: ";
@@ -25,13 +25,13 @@ void err_msg(c_str msg, int err) {
     jerr << " (" << err << ")\n";
 }
 
-void die(c_str msg, int err) {
+void die(char const* msg, int err) {
     err_msg(msg, err);
     die();
 }
 
 extern "C" void handle_signal(int sig) {
-    c_str msg;
+    char const* msg;
     switch (sig) {
     case SIGINT:  msg = "Caught interrupt\n";      break;
     case SIGTERM: msg = "Caught a SIGTERM\n";      break;

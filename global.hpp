@@ -1,6 +1,11 @@
-// Needed for CancelSynchronousIo
-#undef _WIN32_WINNT
-#define _WIN32_WINNT _WIN32_WINNT_VISTA
+
+// Note: The Makefile should define JUP_OS as either Linux or Windows, depending on the OS. Additionally, either JUP_OS_WINDOWS or JUP_OS_LINUX
+
+#ifdef JUP_OS_WINDOWS
+// Needed for CancelSynchronousIo (so, actually unneeded)
+//#undef _WIN32_WINNT
+//#define _WIN32_WINNT _WIN32_WINNT_VISTA
+#endif
 
 #ifndef _USE_MATH_DEFINES
 #define _USE_MATH_DEFINES
@@ -27,19 +32,27 @@
 #include <zlib.h>
 
 // win32 libraries
+#ifdef JUP_OS_WINDOWS
 #include <windows.h>
+#endif
 
 #ifdef NDEBUG
 
 #define assert(expr) (void)__builtin_expect(not (expr), 0)
 #define assert_errno(expr) assert(expr)
+
+#ifdef JUP_OS_WINDOWS
 #define assert_win(expr) assert(expr)
+#endif
 
 #else
 
 #define assert(expr) ((expr) ? (void)0 : ::jup::_assert_fail(#expr, __FILE__, __LINE__))
 #define assert_errno(expr) ((expr) ? (void)0 : ::jup::_assert_errno_fail(#expr, __FILE__, __LINE__))
+
+#ifdef JUP_OS_WINDOWS
 #define assert_win(expr) ((expr) ? (void)0 : ::jup::_assert_win_fail(#expr, __FILE__, __LINE__))
+#endif
 
 #endif
 
@@ -55,17 +68,16 @@ using u16 = std::uint16_t;
 using s8 = std::int8_t;
 using u8 = std::uint8_t;
 
-// Zero terminated, read-only string
-using c_str = char const*;
-
 // Custom assertions, prints stack trace
-[[noreturn]] void _assert_fail(c_str expr_str, c_str file, int line);
-[[noreturn]] void _assert_errno_fail(c_str expr_str, c_str file, int line);
-// win32 specific
-[[noreturn]] void _assert_win_fail(c_str expr_str, c_str file, int line);
+[[noreturn]] void _assert_fail(char const* expr_str, char const* file, int line);
+[[noreturn]] void _assert_errno_fail(char const* expr_str, char const* file, int line);
+
+#ifdef JUP_OS_WINDOWS
+[[noreturn]] void _assert_win_fail(char const* expr_str, char const* file, int line);
+#endif
 
 // Prints the error nicely into the console
-void err_msg(c_str msg, int code = 0);
+void err_msg(char const* msg, int code = 0);
 
 // Narrow a value, asserting that the conversion is valid.
 template <typename T, typename R>
@@ -82,7 +94,7 @@ inline T narrow(R from) {
 
 // Closes the program violently
 [[noreturn]] void die(); // implemented in system_win32.cpp
-[[noreturn]] void die(c_str msg, int code = 0);
+[[noreturn]] void die(char const* msg, int code = 0);
 
 // Registers a signal handler to print things nicely
 void init_signals();

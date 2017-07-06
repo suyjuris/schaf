@@ -1,4 +1,8 @@
 
+#ifndef JUP_OS_WINDOWS
+#error "You are trying to compile a *_win32 file while not on Windows. Please check your build configuration."
+#endif
+
 #include "system.hpp"
 
 #include "libs/stack_walker_win32.hpp"

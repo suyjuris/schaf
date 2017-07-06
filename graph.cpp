@@ -18,7 +18,7 @@ using Path_hash_t = u64;
 
 template <int n>
 static constexpr inline u64 rotate_left (u64 x) {
-    static_assert(0 < n and n < 64);
+    static_assert(0 < n and n < 64, "Must shift by a sensible amount");
     return (x << n) | (x >> (64-n));
 }
 
@@ -385,7 +385,7 @@ void graph_generate_single(Alarm_stream* stream, jup_str repo, std::ostream* out
         assert(g.num_nodes() == (int)nodes.size());
         assert(g.num_edges() == (int)aux_size / 6);
 
-        static_assert(sizeof(Edge) == sizeof(u64));
+        static_assert(sizeof(Edge) == sizeof(u64), "Size of an Edge must be same as u64");
         u32* node_data = (u32*)g.nodes.begin();
         u32* edge_data = (u32*)g.edge_data.begin();
 
@@ -454,7 +454,7 @@ void graph_generate_single(Alarm_stream* stream, jup_str repo, std::ostream* out
         assert(g.num_nodes() == (int)nodes.size());
         assert(g.num_edges() == (int)aux_size / 6);
 
-        static_assert(sizeof(Edge) == sizeof(u64));
+        static_assert(sizeof(Edge) == sizeof(u64), "Size of an Edge must be same as u64");
         u32* node_data = (u32*)g.nodes.begin();
         u32* edge_data = (u32*)g.edge_data.begin();
 

@@ -353,7 +353,7 @@ struct Flat_array {
  */
 template <typename T, typename _Size_t, int offset>
 struct Flat_array_const {
-    static_assert(offset > 0);
+    static_assert(offset > 0, "offset must be greater than 0");
 	using Type = T;
 	using Size_t = _Size_t;
 

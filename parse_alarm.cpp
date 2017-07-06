@@ -20,7 +20,7 @@ static void stream_min(Alarm_stream* stream, int amount) {
         int n = gzread(stream->in_fd, stream->in_data.end(), stream->in_data.space());
         if (n == -1) {
             int err;
-            c_str msg = gzerror(stream->in_fd, &err);
+            char const* msg = gzerror(stream->in_fd, &err);
             die(msg, err);
         }
         stream->num_bytes += n;
@@ -116,7 +116,7 @@ static void parse_header(Alarm_stream* stream, u8* typ, u32* size) {
     assert(0 <= i and i <= (int)sizeof(*size));
 }
 
-static c_str get_type_str(u8 type) {
+static char const* get_type_str(u8 type) {
     if (type == Git_object::OBJ_COMMIT) {
         return "commit";
     } else if (type == Git_object::OBJ_TREE) {
@@ -175,7 +175,7 @@ static void stream_skip_and_hash(Alarm_stream* stream, int offset) {
         int n = gzread(stream->in_fd, stream->in_data.end(), stream->in_data.space());
         if (n == -1) {
             int err;
-            c_str msg = gzerror(stream->in_fd, &err);
+            char const* msg = gzerror(stream->in_fd, &err);
             die(msg, err);
         }
         stream->num_bytes += n;

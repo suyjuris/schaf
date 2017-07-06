@@ -41,7 +41,6 @@ static bool pop(Parse_state* state) {
 static void pop_option_arg(Parse_state* state) {
     assert(state);
 
-    state->current_option = state->current;
     if (not pop(state)) {
         parse_die(state, "Unexpected end of input, expected option argument");
     }
@@ -106,6 +105,8 @@ static bool parse_option(Schaf_options* options, Parse_state* state) {
         return false;
     }
     
+    state->current_option = state->current;
+
     if (
            state->current == "--help" or state->current == "-h"
         or state->current == "-?"     or state->current == "/?"

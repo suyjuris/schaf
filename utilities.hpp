@@ -23,7 +23,7 @@ Buffer& tmp_alloc_buffer();
 
 template <typename T>
 T&& string_unpacker(T&& obj) { return obj; }
-inline c_str string_unpacker(jup_str obj) { return obj.c_str(); }
+inline char const* string_unpacker(jup_str obj) { return obj.c_str(); }
 
 /**
  * Like sprintf, but uses tmp_alloc for memory.

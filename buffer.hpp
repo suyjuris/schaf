@@ -32,7 +32,7 @@ struct Buffer_view {
 	constexpr Buffer_view(std::basic_string<T> const& str):
 		Buffer_view{str.data(), (int)(str.size() * sizeof(T))} {}
 	
-	constexpr Buffer_view(c_str str):
+	constexpr Buffer_view(char const* str):
 		Buffer_view{str, (int)std::strlen(str)} {}
 
 

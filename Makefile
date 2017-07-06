@@ -1,14 +1,25 @@
 
 # Generic C++ Makefile
 
+ifeq ($(OS),Windows_NT)
+  MODE = WINDOWS
+else
+  MODE = LINUX
+endif
+
 # cv2pdb is required to build this project. You can use 'make init' to install a prebuild binary.
 
 TARGET = schaf
-LIBS = -lWs2_32 -lversion -lz -static-libstdc++ -static-libgcc
+
+LIBS = -lz
+ifeq ($(MODE),WINDOWS)
+  LIBS += -lWs2_32 -lversion -static-libstdc++ -static-libgcc
+endif
+
 CXX = g++
 
 CXXFLAGS = -g -Wall -Werror -pedantic -fmax-errors=2
-CPPFLAGS = -std=c++1z
+CPPFLAGS = -std=c++1z -DJUP_OS=$(MODE) -DJUP_OS_$(MODE)
 LDFLAGS  = -Wall
 
 ifdef SCHAF_FAST
@@ -18,11 +29,21 @@ else
   CXXFLAGS += -Og
 endif
 
-EXEEXT = .exe
-CV2PDB = cv2pdb
+ifeq ($(MODE),WINDOWS)
+  EXEEXT = .exe
+  CV2PDB = cv2pdb
+else
+  EXEEXT =
+endif
+
 LIBDIR = libs
 TMPDIR = build_files
 PRE_HEADER = $(TMPDIR)/global.hpp.gch
+
+TMPFILES = *~ $(TARGET)$(EXEEXT)
+ifeq ($(MODE),WINDOWS)
+  TMPFILES += $(TARGET).pdb
+endif
 
 .PHONY: default all clean test init
 .SUFFIXES:
@@ -30,15 +51,28 @@ PRE_HEADER = $(TMPDIR)/global.hpp.gch
 all: default
 
 SOURCES = $(wildcard *.cpp) $(wildcard $(LIBDIR)/*.cpp)
-OBJECTS = $(SOURCES:%.cpp=$(TMPDIR)/%.o)
 HEADERS = $(wildcard *.hpp) $(wildcard $(LIBDIR)/*.hpp)
+
+ifeq ($(MODE),WINDOWS)
+  SOURCES := $(filter-out %_linux.cpp,$(SOURCES))
+  HEADERS := $(filter-out %_linux.hpp,$(HEADERS))
+else
+  SOURCES := $(filter-out %_win32.cpp,$(SOURCES))
+  HEADERS := $(filter-out %_win32.hpp,$(HEADERS))
+endif
+
+OBJECTS = $(SOURCES:%.cpp=$(TMPDIR)/%.o)
 DEPS    = $(SOURCES:%.cpp=$(TMPDIR)/%.d)
 
 test:
-	@echo "Sources: $(SOURCES)"
-	@echo "Objects: $(OBJECTS)"
-	@echo "Headers: $(HEADERS)"
-	@echo "Deps:    $(DEPS)"
+	@echo "Mode:     $(MODE)"
+	@echo "Sources:  $(SOURCES)"
+	@echo "Objects:  $(OBJECTS)"
+	@echo "Headers:  $(HEADERS)"
+	@echo "Deps:     $(DEPS)"
+	@echo "CPPFLAGS: $(CPPFLAGS)"
+	@echo "CXXFLAGS: $(CXXFLAGS)"
+	@echo "LDFLAGS:  $(LDFLAGS)"
 
 $(PRE_HEADER): global.hpp
 	@mkdir -p $(TMPDIR) $(TMPDIR)/$(LIBDIR)
@@ -56,21 +90,28 @@ $(TMPDIR)/%.o: %.cpp $(PRE_HEADER)
 
 default: $(TARGET)
 
-.PRECIOUS: $(TARGET) $(OBJECTS)
+.PRECIOUS: $(TARGET)$(EXEEXT) $(OBJECTS)
 
-$(TMPDIR)/$(TARGET): $(OBJECTS)
+ifeq ($(MODE),WINDOWS)
+$(TMPDIR)/$(TARGET)$(EXEEXT): $(OBJECTS)
 	$(CXX) $(OBJECTS) $(LDFLAGS) $(LIBS) -o $@
 
-$(TARGET): $(TMPDIR)/$(TARGET)
-	$(CV2PDB) -C $<$(EXEEXT) $@$(EXEEXT)
+$(TARGET)$(EXEEXT): $(TMPDIR)/$(TARGET)$(EXEEXT)
+	$(CV2PDB) -C $< $@
+else
+$(TARGET)$(EXEEXT): $(OBJECTS)
+	$(CXX) $(OBJECTS) $(LDFLAGS) $(LIBS) -o $@
+endif
 
 init:
 	mkdir -p /usr/local/bin
+	cp -f eer.py /usr/local/bin/eer
+ifeq ($(MODE),WINDOWS)
 	wget https://ci.appveyor.com/api/projects/rainers/visuald/artifacts/cv2pdb.exe?job=Environment%\
 	3A%20os%3DVisual%20Studio%202013%2C%20VS%3D12%2C%20APPVEYOR_BUILD_WORKER_IMAGE%3DVisual%20Studi\
 	o%202015 -O /usr/local/bin/cv2pdb.exe
-	cp -f eer.py /usr/local/bin/eer
+endif
 
 clean:
-	-rm -f *~ $(TARGET).pdb $(TARGET)$(EXEEXT) $(TMPDIR)/*.* $(TMPDIR)/$(LIBDIR)/*.*
+	-rm -f $(TMPFILES) $(TMPDIR)/*.* $(TMPDIR)/$(LIBDIR)/*.*
 	-rmdir $(TMPDIR)/$(LIBDIR) $(TMPDIR)
