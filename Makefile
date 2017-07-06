@@ -7,8 +7,6 @@ else
   MODE = LINUX
 endif
 
-# cv2pdb is required to build this project. You can use 'make init' to install a prebuild binary.
-
 TARGET = schaf
 
 LIBS = -lz
@@ -88,7 +86,7 @@ $(TMPDIR)/%.o: %.cpp $(PRE_HEADER)
 
 -include $(DEPS)
 
-default: $(TARGET)
+default: $(TARGET)$(EXEEXT)
 
 .PRECIOUS: $(TARGET)$(EXEEXT) $(OBJECTS)
 
