@@ -15,13 +15,15 @@ A change graph is (currently) defined as follows:
 4. For each pair of nodes in the set of files, increment the weight of the corresponding edge by 1.
 5. Delete all edges with weight 0.
 
-As you might note, the number of edges scales quadratically with the largest number of changed files in a commit. While schaf can handle somewhat larger graphs (~1e8 edges on my machine with 16 GiB of RAM) you might want to limit the number of edges (using the `--edges-max` option).
+As you might note, the number of edges scales quadratically with the largest number of changed files in a commit. While schaf can handle somewhat large graphs (~1e8 edges on my machine with 16 GiB of RAM) you might want to limit the number of edges (using the `--edges-max` option).
 
 ## Build instructions
 
-Build the project using a simple `make` . This should work on both the Windows and Linux platform, using a sufficiently new version of `g++` (I have tested it with both 5.4.0 and 6.3.0 .) In the case of Windows, I build using the [mingw64](https://mingw-w64.org/doku.php) project. The tool will not work on big-endian systems. I probably do some unaligned pointer accesses, which are undefined behaviour and may not work one some architectures (x86_64 should be fine, though).
+Build the project using a simple `make` . This should work on both the Windows and Linux platform, using a sufficiently new version of `g++` (I have tested it with both 5.4.0 and 6.3.0 .) In the case of Windows, I build using the [mingw64](https://mingw-w64.org/doku.php) project. The tool will not work on big-endian systems. I do some unaligned pointer accesses, which are undefined behaviour and may not work one some architectures (x86_64 should be fine, though).
 
 Building requires `libz` to be installed on the system in a folder `g++` will find. This is the only external dependency.
+
+To build an optimized version of schaf, set the `SCHAF_FAST` environment variable. This will build using `-O3 -march=native -DNDEBUG`, the last of which disables assertions and some checks for allocation behaviour. On my machine this increases the performance by about 5%.
 
 ### Notes on compiling on Windows
 
@@ -39,6 +41,32 @@ schaf makes use of the following libraries:
 * [zlib](http://zlib.net/), written by Jean-loup Gailly and Mark Adler
 
 zlib is an external dependency, the others can be found in the `libs/` directory.
+
+## Usage Information
+
+    $ ./schaf --help
+    Usage:
+      schaf [options] [--] mode [args]
+
+    Modes:
+      write_graph <input> <output>
+        Executes the job specified in the jobfile <input>, and writes the resulting
+        graphs into the file <output>. It is recommended that <output> has the
+        extension '.schaf.lz4'.
+
+      print_stats <input> [output]
+        Reads the graphs from the file <input> and prints information about them to
+        the console. If <output> is specified, the information will additionally be
+        written to that file, in a machine-readable format.
+
+    Options:
+      --edges-min,-e <val>  [default: none]
+      --edges-max,-E <val>  [default: none]
+        Limits the graphs that are written to graphs with a number of edges inside
+        the specified range.
+
+      --help,-h
+        Prints this message.
 
 ## File format
 
@@ -110,28 +138,3 @@ file consists of binary data, in the following structure:
       nodes is given. schaf is deterministic, but the order of nodes depends on
       implementation details of the hash maps used.
 
-## Usage Information
-
-    $ ./schaf --help
-    Usage:
-      schaf [options] [--] mode [args]
-
-    Modes:
-      write_graph <input> <output>
-        Executes the job specified in the jobfile <input>, and writes the resulting
-        graphs into the file <output>. It is recommended that <output> has the
-        extension '.schaf.lz4'.
-
-      print_stats <input> [output]
-        Reads the graphs from the file <input> and prints information about them to
-        the console. If <output> is specified, the information will additionally be
-        written to that file, in a machine-readable format.
-
-    Options:
-      --edges-min,-e <val>  [default: none]
-      --edges-max,-E <val>  [default: none]
-        Limits the graphs that are written to graphs with a number of edges inside
-        the specified range.
-
-      --help,-h
-        Prints this message.
