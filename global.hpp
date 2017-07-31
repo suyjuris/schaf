@@ -31,10 +31,15 @@
 // zlib
 #include <zlib.h>
 
-// win32 libraries
+// system libraries
 #ifdef JUP_OS_WINDOWS
 #include <windows.h>
+#else
+#include <sys/ioctl.h>
+#include <time.h>
 #endif
+
+#undef assert
 
 #ifdef NDEBUG
 
@@ -55,6 +60,10 @@
 #endif
 
 #endif
+
+#define __JUP_UNIQUE_NAME1(x, y) x##y
+#define __JUP_UNIQUE_NAME2(x, y) __JUP_UNIQUE_NAME1(x, y)
+#define JUP_UNIQUE_NAME(x) __JUP_UNIQUE_NAME2(x, __COUNTER__)
 
 namespace jup {
 

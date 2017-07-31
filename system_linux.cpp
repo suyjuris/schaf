@@ -5,9 +5,20 @@
 
 #include "system.hpp"
 
-#include <sys/ioctl.h>
-
 namespace jup {
+
+static double elapsed_time_offset;
+
+double elapsed_time() {
+    timespec t;
+    assert_errno( clock_gettime(CLOCK_MONOTONIC, &t) == 0 );
+    return (t.tv_sec + 1e-9 * t.tv_nsec) - elapsed_time_offset;
+}
+
+void init_elapsed_time(double val) {
+    elapsed_time_offset = 0;
+    elapsed_time_offset = elapsed_time() - val;
+}
 
 void die() {    
     std::abort();

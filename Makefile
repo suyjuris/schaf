@@ -1,6 +1,8 @@
 
 # Generic C++ Makefile
 
+#@Incomplete Add Support for Windows again
+
 ifeq ($(OS),Windows_NT)
   MODE = WINDOWS
 else
@@ -17,14 +19,14 @@ endif
 CXX = g++
 
 CXXFLAGS = -g -Wall -Werror -pedantic -fmax-errors=2
-CPPFLAGS = -std=c++1z -DJUP_OS=$(MODE) -DJUP_OS_$(MODE)
-LDFLAGS  = -Wall
+CPPFLAGS = -std=c++1z -DJUP_OS=$(MODE) -DJUP_OS_$(MODE) -Ibuild_files/include_linux
+LDFLAGS  = -Wall -ltensorflow_cc
 
 ifdef SCHAF_FAST
   CXXFLAGS += -O3 -march=native
   CPPFLAGS += -DNDEBUG
 else
-  CXXFLAGS += -Og
+  CXXFLAGS += -O0
 endif
 
 ifeq ($(MODE),WINDOWS)
@@ -43,7 +45,7 @@ ifeq ($(MODE),WINDOWS)
   TMPFILES += $(TARGET).pdb
 endif
 
-.PHONY: default all clean test init
+.PHONY: default all clean print_config init distclean
 .SUFFIXES:
 
 all: default
@@ -62,7 +64,7 @@ endif
 OBJECTS = $(SOURCES:%.cpp=$(TMPDIR)/%.o)
 DEPS    = $(SOURCES:%.cpp=$(TMPDIR)/%.d)
 
-test:
+print_config:
 	@echo "Mode:     $(MODE)"
 	@echo "Sources:  $(SOURCES)"
 	@echo "Objects:  $(OBJECTS)"
@@ -71,6 +73,16 @@ test:
 	@echo "CPPFLAGS: $(CPPFLAGS)"
 	@echo "CXXFLAGS: $(CXXFLAGS)"
 	@echo "LDFLAGS:  $(LDFLAGS)"
+
+init:
+	mkdir -p $(TMPDIR)/include_linux
+	tar -xjf $(LIBDIR)/tensorflow_linux.tar.bz2 -C $(TMPDIR)/include_linux
+ifeq ($(MODE),WINDOWS)
+	mkdir -p /usr/local/bin
+	wget https://ci.appveyor.com/api/projects/rainers/visuald/artifacts/cv2pdb.exe?job=Environment%\
+	3A%20os%3DVisual%20Studio%202013%2C%20VS%3D12%2C%20APPVEYOR_BUILD_WORKER_IMAGE%3DVisual%20Studi\
+	o%202015 -O /usr/local/bin/cv2pdb.exe
+endif
 
 $(PRE_HEADER): global.hpp
 	@mkdir -p $(TMPDIR) $(TMPDIR)/$(LIBDIR)
@@ -82,7 +94,7 @@ $(TMPDIR)/%.d: %.cpp $(HEADERS)
 
 $(TMPDIR)/%.o: %.cpp $(PRE_HEADER)
 	@mkdir -p $(TMPDIR) $(TMPDIR)/$(LIBDIR)
-	$(CXX) $(CPPFLAGS) -I $(TMPDIR) -include global.hpp $(CXXFLAGS) -c $< -o $@
+	$(CXX) $(CPPFLAGS) -I$(TMPDIR) -include global.hpp $(CXXFLAGS) -c $< -o $@
 
 -include $(DEPS)
 
@@ -101,15 +113,9 @@ $(TARGET)$(EXEEXT): $(OBJECTS)
 	$(CXX) $(OBJECTS) $(LDFLAGS) $(LIBS) -o $@
 endif
 
-init:
-	mkdir -p /usr/local/bin
-	cp -f eer.py /usr/local/bin/eer
-ifeq ($(MODE),WINDOWS)
-	wget https://ci.appveyor.com/api/projects/rainers/visuald/artifacts/cv2pdb.exe?job=Environment%\
-	3A%20os%3DVisual%20Studio%202013%2C%20VS%3D12%2C%20APPVEYOR_BUILD_WORKER_IMAGE%3DVisual%20Studi\
-	o%202015 -O /usr/local/bin/cv2pdb.exe
-endif
-
 clean:
 	-rm -f $(TMPFILES) $(TMPDIR)/*.* $(TMPDIR)/$(LIBDIR)/*.*
-	-rmdir $(TMPDIR)/$(LIBDIR) $(TMPDIR)
+
+distclean:
+	test -n "$(TMPDIR)"
+	-rm -rf "./$(TMPDIR)"

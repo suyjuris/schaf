@@ -71,7 +71,7 @@ struct Git_commit: public Git_object {
 };
 
 struct Alarm_stream {
-    constexpr static int BUFFER_SIZE_IN  =  64*1024;
+    constexpr static int BUFFER_SIZE_IN  =     64*1024;
     constexpr static int BUFFER_SIZE_OUT = 2*1024*1024;
     
     enum State: u8 {

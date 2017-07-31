@@ -68,5 +68,15 @@ extern std::ostream& jnull;
 extern jup_str jup_stoi_messages[];
 u8 jup_stoi(jup_str str, int* val);
 
+u64 jup_rand();
+
+bool jup_rand_bool(u8 perbyte = 128);
+
+u64 jup_rand_uni(u64 max);
+
+/**
+ * Return a somewhat exponentially distributed value, with parameter lambda = perbyte/256.
+ */
+u8 jup_rand_exp(u8 perbyte);
 
 } /* end of namespace jup */

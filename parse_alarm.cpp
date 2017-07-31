@@ -30,6 +30,8 @@ static void stream_min(Alarm_stream* stream, int amount) {
 
 static bool stream_match(Alarm_stream* stream, Buffer_view str) {
     assert(stream);
+
+    Alarm_stream stream2 = *stream;
     
     if (std::strncmp(
         stream->in_data.begin() + stream->in_data_off,

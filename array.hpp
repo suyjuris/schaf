@@ -91,6 +91,13 @@ public:
 		return data()[pos];
 	}
 
+    int count(T const& obj) const {
+		int result = 0;
+		for (auto& i: *this)
+			if (i == obj) ++result;
+		return result;
+	}
+
     operator bool() const {
         return size() != 0;
     }
@@ -99,10 +106,16 @@ public:
 };
 
 template <typename T>
+struct Array_view_mut;
+
+template <typename T>
 struct Array_view {
 	constexpr Array_view(T const* data = nullptr, int size = 0):
 		m_data{data}, m_size{size} {assert(size >= 0);}
     constexpr Array_view(std::nullptr_t): Array_view{} {}
+	
+	Array_view(Array_view_mut<T>& buf):
+        m_data{buf.begin()}, m_size{buf.size()} {}
 	
 	Array_view(Array<T> const& buf):
         m_data{buf.begin()}, m_size{buf.size()} {}
@@ -124,6 +137,13 @@ struct Array_view {
 		return data()[pos];
 	}
 
+	int count(T const& obj) const {
+		int result = 0;
+		for (auto& i: *this)
+			if (i == obj) ++result;
+		return result;
+	}
+    
     Array_view<T> subview(int pos, int size_) const {
         assert(0 <= pos and pos + size_ <= size());
         return {data() + pos, size_};
@@ -172,6 +192,13 @@ struct Array_view_mut {
 	T& operator[] (int pos) {
 		assert(0 <= pos and pos < size());
 		return data()[pos];
+	}
+
+    int count(T const& obj) const {
+		int result = 0;
+		for (auto& i: *this)
+			if (i == obj) ++result;
+		return result;
 	}
 
     Array_view_mut<T> subview(int pos, int size_) {

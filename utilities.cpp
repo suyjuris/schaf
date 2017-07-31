@@ -194,4 +194,38 @@ u8 jup_stoi(jup_str str, s32* val) {
     }
 }
 
+// from https://en.wikipedia.org/wiki/Xorshift
+constexpr static u64 rand_state_init = 0xd1620b2a7a243d4bull;
+static u64 rand_state = rand_state_init;
+u64 jup_rand() {
+    u64 x = rand_state;
+    x ^= x >> 12;
+    x ^= x << 25;
+    x ^= x >> 27;
+    rand_state = rand_state;
+    return x * 0x2545f4914f6cdd1dull;
+}
+
+u64 jup_rand_uni(u64 max) {
+    u64 x = jup_rand();
+    return x % max;
+}
+
+bool jup_rand_bool(u8 perbyte) {
+    return (jup_rand() & 0xff) < perbyte;
+}
+
+u8 jup_rand_exp(u8 perbyte) {
+    u64 x = jup_rand();
+    u64 y = std::numeric_limits<u64>::max();
+    y = (y >> 8) * perbyte;
+
+    u8 i = 0;
+    while (x < y) {
+        i += x > y;
+        y = (y * perbyte) >> 8;
+    }
+    return i;
+}
+
 } /* end of namespace jup */

@@ -92,7 +92,7 @@ file consists of binary data, in the following structure:
       the respective u32 in bytes. (If, for example, the first byte of offset_nodes
       was at position 4, which it should be, and holds the value 24, then the first
       byte of the nodes structure would be at position 28.) offset_name should
-      always hold the value 12. These three offsets each specify the locations of an
+      always hold the value 12. These three offsets each specify the location of an
       array, with the structure
         
         size item_1 item_2 ... item_size
@@ -134,7 +134,7 @@ file consists of binary data, in the following structure:
       that offset_name < offset_nodes < offset_edges holds), with no padding bytes
       in between.
       
-      The format specified above determines is unique, as long a certain order of
-      nodes is given. schaf is deterministic, but the order of nodes depends on
-      implementation details of the hash maps used.
+      The format specified above is unique, as long a certain order of nodes is
+      given. schaf is deterministic, but the order of nodes depends on implementation
+      details of the hash maps used.
 

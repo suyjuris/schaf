@@ -9,6 +9,7 @@
 #include "debug.hpp"
 #include "utilities.hpp"
 #include "options.hpp"
+#include "system.hpp"
 
 namespace jup {
 
@@ -23,11 +24,11 @@ static constexpr inline u64 rotate_left (u64 x) {
 }
 
 
-constexpr static u64 PRIME64_1 = 11400714785074694791ULL;
-constexpr static u64 PRIME64_2 = 14029467366897019727ULL;
-constexpr static u64 PRIME64_3 =  1609587929392839161ULL;
-constexpr static u64 PRIME64_4 =  9650029242287828579ULL;
-constexpr static u64 PRIME64_5 =  2870177450012600261ULL;
+constexpr static u64 PRIME64_1 = 11400714785074694791ull;
+constexpr static u64 PRIME64_2 = 14029467366897019727ull;
+constexpr static u64 PRIME64_3 =  1609587929392839161ull;
+constexpr static u64 PRIME64_4 =  9650029242287828579ull;
+constexpr static u64 PRIME64_5 =  2870177450012600261ull;
 
 static Path_hash_t concatenate_path(Path_hash_t a, u32 b) {
     // XXHash, specialized for an u64 and an u32
@@ -802,13 +803,9 @@ static void metrics_print(std::ostream& out_nice, std::ostream& out_data, Dist_m
 }
 
 void graph_print_stats(jup_str input, jup_str output) {
-    std::ifstream in_stream {input.c_str(), std::ios::binary};
-
-    char buf[8];
-    in_stream.read(buf, 4);
-    assert(in_stream and in_stream.gcount() == 4);
-    assert(std::memcmp(buf, SCHAFFILE_MAGIC.data(), 4) == 0);
-
+    Graph_reader_state state;
+    graph_reader_init(&state, input);
+    
     std::ostream* out;
     std::ofstream out_file;
     if (output) {
@@ -823,32 +820,13 @@ void graph_print_stats(jup_str input, jup_str output) {
     metrics_print_header(*out, "weight");
     *out << endl;
     
-    Buffer lz4_data;
-    Buffer graph_data;
-    while (in_stream) {
-        auto beg_t = std::clock();
+    while (graph_reader_next(&state)) {
+        double beg_t = elapsed_time();
 
-        in_stream.read(buf, 8);
-        if (in_stream.eof() and in_stream.gcount() == 0) break;
-        assert(in_stream and in_stream.gcount() == 8);
-        
-        u32 graph_size = *(u32*)buf;
-        u32 lz4_size = *((u32*)buf + 1);
-
-        lz4_data.resize(lz4_size);
-        in_stream.read(lz4_data.data(), lz4_data.size());
-        assert(in_stream and in_stream.gcount() == lz4_data.size());
-
-        graph_data.resize(graph_size);
-        int n = LZ4_decompress_safe(
-            lz4_data.data(), graph_data.data(), lz4_data.size(), graph_data.size()
-        );
-        assert(n > 0 and n == graph_data.size());
-
-        Graph const& g = graph_data.get<Graph>();
+        Graph const& g = *state.graph;
 
         {
-        u64 hash_val = XXH64(graph_data.data(), graph_data.size(), 0);
+        u64 hash_val = state.hash_val;
 
         u64 max_edges =  g.num_nodes() * (g.num_nodes() - 1);
         float density = (float)g.num_edges() / (float)max_edges;
@@ -856,13 +834,13 @@ void graph_print_stats(jup_str input, jup_str output) {
         jout << "Name: " << g.name.begin() << '\n';
         jout << "Number of nodes: " << g.num_nodes() << "\nNumber of edges: " << g.num_edges()
              << "\nGraph density: " << jup_printf("%.2f", density) << "%\nChecksum (xxHash64): ";
-        jout << nice_hex(hash_val) << "\nUncompressed size: " << graph_data.size() << " (";
-        jout << nice_bytes(graph_data.size()) << ")\nCompressed size: " << lz4_data.size() << " (";
-        jout << nice_bytes(lz4_data.size()) << ")\n";
+        jout << nice_hex(hash_val) << "\nUncompressed size: " << state.graph_size << " (";
+        jout << nice_bytes(state.graph_size) << ")\nCompressed size: " << state.lz4_size << " (";
+        jout << nice_bytes(state.lz4_size) << ")\n";
 
         *out << "\"" << g.name.begin() << "\" " << g.num_nodes() << " " << g.num_edges() << " "
-             << density << " " << hash_val << " " << graph_data.size() << " "
-             << lz4_data.size() << " ";
+             << density << " " << hash_val << " " << state.graph_size << " "
+             << state.lz4_size << " ";
         }
 
         {Array<u32> degrees;
@@ -884,13 +862,63 @@ void graph_print_stats(jup_str input, jup_str output) {
         metrics_print(jout, *out, metric);
         *out << endl;}
 
-
-        float f = (float)(std::clock() - beg_t) / (float)CLOCKS_PER_SEC;
-        jout << jup_printf("Done. (%.2fs)\n", f) << endl;
+        jout << jup_printf("Done. (%.2fs)\n", elapsed_time() - beg_t) << endl;
         
         // The graph is now unusable.
     }
     
+}
+
+void graph_reader_init(Graph_reader_state* state, jup_str file) {
+    state->input.open(file.c_str(), std::ios::binary);
+
+    state->data.reserve(4);
+    state->input.read(state->data.data(), 4);
+    assert(state->input and state->input.gcount() == 4);
+    assert(std::memcmp(state->data.data(), SCHAFFILE_MAGIC.data(), 4) == 0);
+
+    state->data.trap_alloc(true);
+}
+
+bool graph_reader_next(Graph_reader_state* state) {
+    if (not state->input) return false;
+
+    state->graph = nullptr;
+    double begin_t = elapsed_time();
+    
+    state->data.trap_alloc(false);
+
+    state->data.resize(8);
+    state->input.read(state->data.data(), 8);
+    if (state->input.eof() and state->input.gcount() == 0) return false;
+    assert(state->input and state->input.gcount() == 8);
+    
+    u32 graph_size = state->data.get<u32>(0);
+    u32 lz4_size = state->data.get<u32>(4);
+
+    int offset_lz4 = state->data.size();
+    int offset_graph = offset_lz4 + lz4_size;
+    state->data.addsize(lz4_size + graph_size);
+    
+    state->input.read(state->data.data() + offset_lz4, lz4_size);
+    assert(state->input and state->input.gcount() == lz4_size);
+
+    int n = LZ4_decompress_safe(
+        state->data.data() + offset_lz4,
+        state->data.data() + offset_graph,
+        lz4_size,
+        graph_size
+    );
+    assert(n > 0 and n == (int)graph_size);
+    state->graph = &state->data.get<Graph>(offset_graph);
+    state->duration = elapsed_time() - begin_t;
+
+    state->graph_size = graph_size;
+    state->lz4_size = lz4_size;
+    state->hash_val = XXH64(state->data.data() + offset_graph, graph_size, 0);
+
+    state->data.trap_alloc(true);
+    return true;
 }
 
 } /* end of namespace jup */

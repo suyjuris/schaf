@@ -22,9 +22,9 @@ struct Graph {
     int num_nodes() const { return nodes.size() - 1; }
     int num_edges() const { return edge_data.size() / 2; }
 
-    Array_view<Edge> adjacent(u32 node_id) {
-        Edge* begin = &edge_data[nodes[node_id  ].data_offset];
-        Edge* end   = &edge_data[nodes[node_id+1].data_offset];
+    Array_view<Edge> adjacent(u32 node_id) const {
+        Edge const* begin = &edge_data[nodes[node_id  ].data_offset];
+        Edge const* end   = &edge_data[nodes[node_id+1].data_offset];
         return Array_view<Edge> {begin, narrow<int>(end - begin)};
     }
 
@@ -38,5 +38,18 @@ struct Graph {
 
 void graph_exec_jobfile(jup_str file, jup_str output);
 void graph_print_stats(jup_str input, jup_str output);
+
+struct Graph_reader_state {    
+    Buffer data;
+    std::ifstream input;
+    Graph* graph = nullptr;
+    double duration = 0;
+    u32 graph_size = 0;
+    u32 lz4_size = 0;
+    u64 hash_val = 0;
+};
+
+void graph_reader_init(Graph_reader_state* state, jup_str file);
+bool graph_reader_next(Graph_reader_state* state);
 
 } /* end of namespace jup */

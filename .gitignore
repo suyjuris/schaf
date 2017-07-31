@@ -29,6 +29,7 @@ stats
 **/*.pdb
 libwinpthread-1.dll
 graph_data/
+tf_data/
 schaf
 README.html
-
+include_win/

@@ -82,6 +82,11 @@ void die() {
     std::abort();
 }
 
+void _assert_win_fail(c_str expr_str, c_str file, int line) {
+    win_last_errmsg();
+    _assert_fail(expr_str, file, line);
+}
+
 int get_terminal_width() {
     CONSOLE_SCREEN_BUFFER_INFO info;
     GetConsoleScreenBufferInfo(GetStdHandle(STD_OUTPUT_HANDLE), &info);
