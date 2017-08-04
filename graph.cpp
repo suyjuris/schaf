@@ -921,4 +921,11 @@ bool graph_reader_next(Graph_reader_state* state) {
     return true;
 }
 
+void graph_reader_close(Graph_reader_state* state) {
+    state->data.trap_alloc(false);
+    state->data.free();
+    state->input.close();
+    state->graph = nullptr;
+}
+
 } /* end of namespace jup */

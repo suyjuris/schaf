@@ -5,12 +5,15 @@
 #include "parse_alarm.hpp"
 #include "system.hpp"
 
+#include "utilities.hpp"
+#include "debug.hpp"
+
 using namespace jup;
 
 int main(int argc, char const* const* argv) {
     init_signals();
     init_elapsed_time();
-    
+
     network_main();
     
 /*

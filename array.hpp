@@ -182,9 +182,9 @@ struct Array_view_mut {
 	
 	int size() const { return m_size; }
 	
-	T* begin() { return m_data; }
-	T* end()   { return m_data + m_size; }
-    T* data()  { return begin(); }
+	T* begin() const { return m_data; }
+	T* end()   const { return m_data + m_size; }
+    T* data()  const { return begin(); }
 
     T& front() { return (*this)[0]; }
     T& back() { return (*this)[size() - 1]; }

@@ -33,6 +33,7 @@ ifeq ($(MODE),WINDOWS)
   EXEEXT = .exe
   CV2PDB = cv2pdb
 else
+  LDFLAGS += -rdynamic
   EXEEXT =
 endif
 

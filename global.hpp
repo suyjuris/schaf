@@ -37,13 +37,12 @@
 #else
 #include <sys/ioctl.h>
 #include <time.h>
+#include <execinfo.h>
 #endif
-
-#undef assert
 
 #ifdef NDEBUG
 
-#define assert(expr) (void)__builtin_expect(not (expr), 0)
+#define __jup_assert(expr) (void)__builtin_expect(not (expr), 0)
 #define assert_errno(expr) assert(expr)
 
 #ifdef JUP_OS_WINDOWS
@@ -52,7 +51,7 @@
 
 #else
 
-#define assert(expr) ((expr) ? (void)0 : ::jup::_assert_fail(#expr, __FILE__, __LINE__))
+#define __jup_assert(expr) ((expr) ? (void)0 : ::jup::_assert_fail(#expr, __FILE__, __LINE__))
 #define assert_errno(expr) ((expr) ? (void)0 : ::jup::_assert_errno_fail(#expr, __FILE__, __LINE__))
 
 #ifdef JUP_OS_WINDOWS
@@ -60,6 +59,9 @@
 #endif
 
 #endif
+
+#undef assert
+#define assert __jup_assert
 
 #define __JUP_UNIQUE_NAME1(x, y) x##y
 #define __JUP_UNIQUE_NAME2(x, y) __JUP_UNIQUE_NAME1(x, y)

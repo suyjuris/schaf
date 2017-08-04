@@ -10,38 +10,38 @@ namespace jup {
 
 void dbg_main();
 
-#define __get_macro(_0, _1, _2, _3, _4, _5, _6, _7, _8, _9,\
+#define __jup_get_macro(_0, _1, _2, _3, _4, _5, _6, _7, _8, _9,\
 _10, _11, _12, _13, _14, _15, _16, _17, _18, mac, ...) mac
-#define __fh1(mac, a) mac(a)
-#define __fh2(mac, a, ...) mac(a) __fh1(mac, __VA_ARGS__)
-#define __fh3(mac, a, ...) mac(a) __fh2(mac, __VA_ARGS__)
-#define __fh4(mac, a, ...) mac(a) __fh3(mac, __VA_ARGS__)
-#define __fh5(mac, a, ...) mac(a) __fh4(mac, __VA_ARGS__)
-#define __fh6(mac, a, ...) mac(a) __fh5(mac, __VA_ARGS__)
-#define __fh7(mac, a, ...) mac(a) __fh6(mac, __VA_ARGS__)
-#define __fh8(mac, a, ...) mac(a) __fh7(mac, __VA_ARGS__)
-#define __fh9(mac, a, ...) mac(a) __fh8(mac, __VA_ARGS__)
-#define __fh10(mac, a, ...) mac(a) __fh9(mac, __VA_ARGS__)
-#define __fh11(mac, a, ...) mac(a) __fh10(mac, __VA_ARGS__)
-#define __fh12(mac, a, ...) mac(a) __fh11(mac, __VA_ARGS__)
-#define __fh13(mac, a, ...) mac(a) __fh12(mac, __VA_ARGS__)
-#define __fh14(mac, a, ...) mac(a) __fh13(mac, __VA_ARGS__)
-#define __fh15(mac, a, ...) mac(a) __fh14(mac, __VA_ARGS__)
-#define __fh16(mac, a, ...) mac(a) __fh15(mac, __VA_ARGS__)
-#define __fh17(mac, a, ...) mac(a) __fh16(mac, __VA_ARGS__)
-#define __fh18(mac, a, ...) mac(a) __fh17(mac, __VA_ARGS__)
-#define __fh19(mac, a, ...) mac(a) __fh18(mac, __VA_ARGS__)
-#define __forall(mac, ...) __get_macro(__VA_ARGS__, __fh19,\
-__fh18, __fh17, __fh16, __fh15,__fh14, __fh13, __fh12, __fh11,\
-__fh10, __fh9, __fh8, __fh7, __fh6, __fh5, __fh4, __fh3, __fh2,\
- __fh1, "fill") (mac, __VA_ARGS__)
+#define __jup_fh1(mac, a) mac(a)
+#define __jup_fh2(mac, a, ...) mac(a) __jup_fh1(mac, __VA_ARGS__)
+#define __jup_fh3(mac, a, ...) mac(a) __jup_fh2(mac, __VA_ARGS__)
+#define __jup_fh4(mac, a, ...) mac(a) __jup_fh3(mac, __VA_ARGS__)
+#define __jup_fh5(mac, a, ...) mac(a) __jup_fh4(mac, __VA_ARGS__)
+#define __jup_fh6(mac, a, ...) mac(a) __jup_fh5(mac, __VA_ARGS__)
+#define __jup_fh7(mac, a, ...) mac(a) __jup_fh6(mac, __VA_ARGS__)
+#define __jup_fh8(mac, a, ...) mac(a) __jup_fh7(mac, __VA_ARGS__)
+#define __jup_fh9(mac, a, ...) mac(a) __jup_fh8(mac, __VA_ARGS__)
+#define __jup_fh10(mac, a, ...) mac(a) __jup_fh9(mac, __VA_ARGS__)
+#define __jup_fh11(mac, a, ...) mac(a) __jup_fh10(mac, __VA_ARGS__)
+#define __jup_fh12(mac, a, ...) mac(a) __jup_fh11(mac, __VA_ARGS__)
+#define __jup_fh13(mac, a, ...) mac(a) __jup_fh12(mac, __VA_ARGS__)
+#define __jup_fh14(mac, a, ...) mac(a) __jup_fh13(mac, __VA_ARGS__)
+#define __jup_fh15(mac, a, ...) mac(a) __jup_fh14(mac, __VA_ARGS__)
+#define __jup_fh16(mac, a, ...) mac(a) __jup_fh15(mac, __VA_ARGS__)
+#define __jup_fh17(mac, a, ...) mac(a) __jup_fh16(mac, __VA_ARGS__)
+#define __jup_fh18(mac, a, ...) mac(a) __jup_fh17(mac, __VA_ARGS__)
+#define __jup_fh19(mac, a, ...) mac(a) __jup_fh18(mac, __VA_ARGS__)
+#define __forall(mac, ...) __jup_get_macro(__VA_ARGS__, __jup_fh19,\
+__jup_fh18, __jup_fh17, __jup_fh16, __jup_fh15,__jup_fh14, __jup_fh13, __jup_fh12, __jup_fh11,\
+__jup_fh10, __jup_fh9, __jup_fh8, __jup_fh7, __jup_fh6, __jup_fh5, __jup_fh4, __jup_fh3, __jup_fh2,\
+ __jup_fh1, "fill") (mac, __VA_ARGS__)
 
-#define __sm1(x, y, ...) y
-#define __sm2(...) __sm1(__VA_ARGS__, __sm4,)
-#define __sm3(...) ~, __sm5,
-#define __sm4(f1, f2, x) f1(x)
-#define __sm5(f1, f2, x) f2 x
-#define __select(f1, f2, x) __sm2(__sm3 x)(f1, f2, x)
+#define __jup_sm1(x, y, ...) y
+#define __jup_sm2(...) __jup_sm1(__VA_ARGS__, __jup_sm4,)
+#define __jup_sm3(...) ~, __jup_sm5,
+#define __jup_sm4(f1, f2, x) f1(x)
+#define __jup_sm5(f1, f2, x) f2 x
+#define __jup_select(f1, f2, x) __jup_sm2(__jup_sm3 x)(f1, f2, x)
 
 // An output stream for debugging purposes
 struct Debug_ostream {
@@ -106,9 +106,12 @@ inline Debug_ostream& operator< (Debug_ostream& out, Repr r) {
 	return out;
 }
 
-template <typename T> struct Hex { T const& value; };
-
-template <typename T> auto make_hex(T const& obj) { return Hex<T> {obj}; }
+template <typename T>
+struct Hex_t {
+    T const& value;
+};
+template <typename T>
+auto Hex(T const& val) { return Hex_t<T>{val}; }
 
 template <typename T> struct Hex_fmt;
 template <> struct Hex_fmt<u8>  { static constexpr char const* fmt = "0x%.2hhx"; };
@@ -122,7 +125,7 @@ template <> struct Hex_fmt<s64> { static constexpr char const* fmt = "0x%.16I64x
 template <typename T> struct Hex_fmt<T*> { static constexpr char const* fmt = "%p"; };
 
 template <typename T>
-inline Debug_ostream& operator< (Debug_ostream& out, Hex<T> h) {
+inline Debug_ostream& operator< (Debug_ostream& out, Hex_t<T> h) {
     out.printf(Hex_fmt<T>::fmt, h.value);
     out.out.put(' ');
     return out;
@@ -140,7 +143,7 @@ inline Debug_ostream& operator< (Debug_ostream& out, Id_string i) {
         out.out.put('"');
         out.out.put(' ');
     } else {
-        out < make_hex(i.id);
+        out < Hex(i.id);
     }
 	return out;
 }
@@ -166,6 +169,10 @@ template <typename T>
 inline Debug_ostream& operator< (Debug_ostream& out, Array_view<T> const& arr) {
 	return out <= arr;
 }
+template <typename T>
+inline Debug_ostream& operator< (Debug_ostream& out, Array_view_mut<T> const& arr) {
+	return out <= arr;
+}
 template <typename T, size_t n>
 Debug_ostream& operator< (Debug_ostream& out, T const (&arr)[n]) {
 	return out <= arr;
@@ -175,10 +182,11 @@ Debug_ostream& operator< (Debug_ostream& out, T const& obj) {
 	out.out << obj << ' '; return out;
 }
 inline Debug_ostream& operator< (Debug_ostream& out, char const* s) {
-	return out.printf(s);
+	out.printf(s);
+    return out;
 }
 inline Debug_ostream& operator< (Debug_ostream& out, double d) {
-	return out.printf("%.2elf ", d);
+	return out.printf("%.2le ", d);
 }
 inline Debug_ostream& operator< (Debug_ostream& out, float f) {
     return out < (double)f;
@@ -187,51 +195,67 @@ inline Debug_ostream& operator< (Debug_ostream& out, u8 n) {
     return out < (int)n;
 }
 
+template <typename T>
+inline Debug_ostream& operator> (Debug_ostream& out, T const& t) {
+    return out < t;
+}
+
+
 extern Debug_ostream jdbg;
 
 // type must have between 1 and 15 elements
-#define display_var1(var) < " " < #var < " = " < obj.var < "\b,"
-#define display_var2(var, fmt) < " " < #var < " = " < fmt(obj.var) < "\b,"
-#define display_var(var) __select(display_var1, display_var2, var)
-#define display_obj(type, ...)                                          \
-    out < "(" < #type < ") {" __forall(display_var, __VA_ARGS__) < "\b } "
-#define print_for_gdb(type) \
+#define __jup_display_var1(var) < " " < #var < " = " < obj.var < "\b,"
+#define __jup_display_var2(var, fmt) < " " < #var < " = " < fmt(obj.var) < "\b,"
+#define __jup_display_var(var) __jup_select(__jup_display_var1, __jup_display_var2, var)
+#define __jup_display_val1(var) < obj.var < "\b, "
+#define __jup_display_val2(var, fmt) < fmt(obj.var) < "\b, "
+#define __jup_display_val(var) __jup_select(__jup_display_val1, __jup_display_val2, var)
+#define __jup_display_obj(type, ...)                                          \
+    out < "(" < #type < ") {" __forall(__jup_display_var, __VA_ARGS__) < "\b } "
+#define __jup_display_vec(type, ...)                                          \
+    out < "{" __forall(__jup_display_val, __VA_ARGS__) < "\b\b} "
+#define __jup_print_gdb(type) \
     inline void print(type const& obj) __attribute__ ((used));  \
     inline void print(type const& obj) {                        \
         jup::jdbg < obj, 0;                                     \
     }
-#define op(type, ...) \
-    inline Debug_ostream& operator< (Debug_ostream& out, type const& obj) { \
-	    return display_obj(type, __VA_ARGS__);                              \
-    }                                                                       \
-    print_for_gdb(type)
+#define __jup_dbg(type, ...) \
+    inline Debug_ostream& operator< (Debug_ostream& out, type const& obj) {    \
+	    return __jup_display_obj(type, __VA_ARGS__);                           \
+    }                                                                          \
+    inline Debug_ostream& operator> (Debug_ostream& out, type const& obj) {    \
+	    return __jup_display_vec(type, __VA_ARGS__);                           \
+    }                                                                          \
+    __jup_print_gdb(type)
 
-#define hex(x) (x, make_hex)
-#define repr(x) (x, Repr)
-#define id(x) (x, Id_string)
-#define mask(x, m) (x, (apply_mask<decltype(m), m>))
+#define __jup_hex(x) (x, Hex)
+#define __jup_repr(x) (x, Repr)
+#define __jup_id(x) (x, Id_string)
+#define __jup_mask(x, m) (x, (apply_mask<decltype(m), m>))
 
-op(Buffer_view, hex(m_data), m_size)
-op(Buffer, hex(m_data), m_size, mask(m_capacity, 0x7fffffff))
-op(Idmap, m_size, data)
-op(Git_object, type, hex(sha))
-op(Git_tree_Entry, mode, hex(sha), id(name))
-op(Git_commit, type, hex(sha), hex(tree), parents)
-op(Git_tree, type, hex(sha), entries)
-op(Alarm_stream, in_fd, in_data, in_data_off, in_data_znext, in_data_zstate, \
+__jup_dbg(Buffer_view, __jup_hex(m_data), m_size)
+__jup_dbg(Buffer, __jup_hex(m_data), m_size, __jup_mask(m_capacity, 0x7fffffff))
+__jup_dbg(Idmap, m_size, data)
+__jup_dbg(Git_object, type, __jup_hex(sha))
+__jup_dbg(Git_tree_Entry, mode, __jup_hex(sha), __jup_id(name))
+__jup_dbg(Git_commit, type, __jup_hex(sha), __jup_hex(tree), parents)
+__jup_dbg(Git_tree, type, __jup_hex(sha), entries)
+__jup_dbg(Alarm_stream, in_fd, in_data, in_data_off, in_data_znext, in_data_zstate, \
     out_data, strings, state)
-op(Node, data_offset)
-op(Edge, other, weight)
+__jup_dbg(Node, data_offset)
+__jup_dbg(Edge, other, weight)
 
-#undef op
-#undef display_obj
-#undef display_var
-#undef display_var1
-#undef display_var2
-#undef hex
-#undef repr
-#undef id
-#undef mask
+template <typename Range>
+Debug_ostream& operator>= (Debug_ostream& out, Range const& r) {
+	out < "{";
+	if (std::begin(r) == std::end(r)) {
+		return  out < "} ";
+	}
+    for (auto i = std::begin(r); i != std::end(r); ++i) {
+        out > *i < "\b, ";
+    }
+    return out < "\b\b} ";
+}
 
 template <typename Range>
 Debug_ostream& operator<= (Debug_ostream& out, Range const& r) {

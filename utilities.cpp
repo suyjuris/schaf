@@ -202,7 +202,7 @@ u64 jup_rand() {
     x ^= x >> 12;
     x ^= x << 25;
     x ^= x >> 27;
-    rand_state = rand_state;
+    rand_state = x;
     return x * 0x2545f4914f6cdd1dull;
 }
 
