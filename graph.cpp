@@ -52,6 +52,9 @@ struct Hasher_Edge_t {
     
     std::size_t operator() (Edge_t val) const noexcept {
         // splitmix64, see http://xorshift.di.unimi.it/splitmix64.c
+        
+        // This function ist not needed for correctness, only speed. Empirically, it is faster
+        // without the second line.
         val = (val ^ (val >> 30)) * 0xbf58476d1ce4e5b9ull;
         //val = (val ^ (val >> 27)) * 0x94d049bb133111ebull;
         val = val ^ (val >> 31);
@@ -919,6 +922,13 @@ bool graph_reader_next(Graph_reader_state* state) {
 
     state->data.trap_alloc(true);
     return true;
+}
+
+void graph_reader_reset(Graph_reader_state* state) {
+    assert(not state->input.bad());
+    state->input.seekg(0);
+    state->data.reset();
+    state->graph = nullptr;
 }
 
 void graph_reader_close(Graph_reader_state* state) {

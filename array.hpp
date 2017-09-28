@@ -229,4 +229,48 @@ struct Array_view_mut {
 	int m_size;
 };
 
+template <typename T, int m_size>
+struct Array_inline {
+	constexpr int size() const { return m_size; }
+	
+	T* begin() const { return m_data; }
+	T* end()   const { return m_data + m_size; }
+    T* data()  const { return begin(); }
+
+    T& front() { return (*this)[0]; }
+    T& back() { return (*this)[size() - 1]; }
+    
+	T& operator[] (int pos) {
+		assert(0 <= pos and pos < size());
+		return data()[pos];
+	}
+
+    int count(T const& obj) const {
+		int result = 0;
+		for (auto& i: *this)
+			if (i == obj) ++result;
+		return result;
+	}
+
+    Array_view<T> subview(int pos, int size_) const {
+        assert(0 <= pos and pos + size_ <= size());
+        return {data() + pos, size_};
+    }
+    
+    Buffer_view as_bytes() const {
+        return {data(), size() * sizeof(T)};
+    }
+
+	u32 get_hash() const {
+        return as_bytes().get_hash();
+	}
+    
+	bool operator== (Array_inline<T> const& other) const {
+        return as_bytes() == other.as_bytes();
+	}
+	bool operator!= (Array_inline const& buf) const { return !(*this == buf); }
+    
+	T m_data[size] {};
+};
+
 } /* end of namespace jup */

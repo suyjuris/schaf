@@ -535,6 +535,124 @@ void network_main() {
     network_free(state_net);
 }
 
+
+void network_gendata(jup_str graph_file, Training_data* data) {
+    assert(data);
+
+    Graph_reader_state state_graph;
+    graph_reader_init(&state_graph, graph_file);
+
+    Neighbourhood_finder neighbours;
+    
+    int graph_left = 0;
+    int cur_batch = 0;
+    int cur_instance = 0;
+
+    while (cur_batch < batch_count) {
+        Batch_data& out = data->batches[cur_batch];
+        
+        if (graph_left == 0) {
+            bool c = graph_reader_next(&state_graph);
+            if (not c) {
+                jout << "  Rewind for more data" << endl;
+                graph_reader_reset(&state_graph);
+                c = graph_reader_next(&state_graph);
+                assert(c);
+            }
+                
+            graph_left = state_graph.graph->num_nodes() / gen_graph_nodes;
+            jdbg < "Loading graph" < state_graph.graph->name.begin() < graph_left ,0;
+            if (graph_left == 0) continue;
+        }
+
+        while (cur_instance < batch_size) {
+            if (cur_instance == 0) {
+                std::memset(out.edge_weights.data(), 0, out.edge_weights.size() * sizeof(float));
+            }
+            
+            u32 node = jup_rand_uni(state_graph.graph->num_nodes());
+            auto nodes = neighbours.find(*state_graph.graph, node, 16);
+
+            for (int i = 0; i < nodes.size(); ++i) {
+                int j = 0;
+                if (nodes[i] == (u32)-1) continue;
+                for (Edge e: state_graph.graph->adjacent(nodes[i])) {
+                    while (j < nodes.size() and e.other > nodes[j]) ++j;
+                    if (j >= nodes.size()) break;
+                    if (e.other != nodes[j]) continue;
+                    out.edge_weights[cur_instance*256 + i*16 + j] = e.weight;
+                }
+            }
+
+            // Whether to have a positive or a negative example
+            if (jup_rand_bool()) {
+                /*
+                for (int i = 0; i < 32; ++i) {
+                    // Swap edges a and b
+                    u32 a = jup_rand_uni(256 - 16);
+                    u32 b = jup_rand_uni(256 - 16 - 1);
+                    b += b >= a;
+                    a += a / 16 + 1;
+                    b += b / 16 + 1;
+
+                    int a_ = (a % 16) * 16 + a / 16;
+                    int b_ = (b % 16) * 16 + b / 16;
+
+                    assert(out.edge_weights[cur_instance*256 + a] == out.edge_weights[cur_instance*256 + a_]);
+                    assert(out.edge_weights[cur_instance*256 + b] == out.edge_weights[cur_instance*256 + b_]);
+                    std::swap(out.edge_weights[cur_instance*256 + a ], out.edge_weights[cur_instance*256 + b ]);
+                    std::swap(out.edge_weights[cur_instance*256 + a_], out.edge_weights[cur_instance*256 + b_]);
+                }
+                */
+                
+                for (int i = 0; i < 32; ++i) {
+                    // Add 10 to a random edge
+                    u32 a = jup_rand_uni(256 - 16);
+                    a += a / 16 + 1;
+
+                    out.edge_weights[cur_instance*256 + a] += 10;
+                }
+
+                out.results[cur_instance] = -1.f;
+            } else {
+                out.results[cur_instance] = 1.f;
+            }
+
+            // Normalize
+            float max = 1.f;
+            for (int i = 0; i < 256; ++i) {
+                max = std::max(max, out.edge_weights[cur_instance*256 + i]);
+            }
+            //jdbg < max ,0;
+            for (float& f: out.edge_weights.subview(cur_instance*256, 256)) {
+                f /= max;
+                //f = std::log(f/max*M_E + exp(-1));
+            }
+            /*for (int i = 0; i < 16; ++i) {
+                jdbg >= out.edge_weights.subview(cur_instance*256 + i*16, 16) ,0;
+            }
+            jdbg ,0;
+            if (cur_instance == 5) std::exit(0);*/
+            
+            
+            ++cur_instance;
+            --graph_left;
+
+            if (graph_left == 0) break;
+        }
+
+        
+        if (cur_instance == batch_size) {
+            cur_instance = 0;
+            ++cur_batch;
+        }
+    }
+
+    graph_reader_close(&state_graph);
+    network_free(state_net);
+}
+
+
 /*static void network_run_op(Network_state* state, jup_str name) {
     using namespace tensorflow;
     using namespace tensorflow::ops;
