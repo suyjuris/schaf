@@ -5,18 +5,36 @@
 
 namespace jup {
 
-class Arena_allocator {
+class Arena {
 public:
-    Arena_allocator() = default;
-    Arena_allocator(Arena_allocator const&) = default;
-    Arena_allocator(Arena_allocator&&) = default;
-    Arena_allocator& operator= (Arena_allocator const&) = default;
-    Arena_allocator& operator= (Arena_allocator&&) = default;
+    Arena(int page_size = 4096): page_size{page_size} {}
+    Arena(Arena const&) = default;
+    Arena(Arena&&) = default;
+    Arena& operator= (Arena const&) = default;
+    Arena& operator= (Arena&&) = default;
     
-    ~Arena_allocator() { free(); }
+    ~Arena() { free(); }
 
     void free() {
         for (auto i: pages) std::free((void*)i.data());
+        pages.reset();
+    }
+    void reset() {
+        int max_i = -1;
+        int max_val = 0;
+        for (int i = 0; i < pages.size(); ++i) {
+            if (pages[i].size() > max_val) {
+                max_i = i;
+                max_val = pages[i].size();
+            }
+        }
+        if (max_i != -1) {
+            auto tmp = pages[max_i];
+            pages[max_i] = {nullptr, 0};
+            free();
+            pages.push_back(tmp);
+        }
+        last_page_used = 0;
     }
 
     void store_view(Buffer_view page) {
@@ -61,7 +79,7 @@ public:
     }
     
     Array<Buffer_view> pages;
-    int page_size = 64 * 1024;
+    int page_size;
     int last_page_used = 0;
 };
 

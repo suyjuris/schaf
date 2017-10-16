@@ -1,4 +1,6 @@
 
+#include "libs/xxhash.hpp"
+
 #include "array.hpp"
 #include "buffer.hpp"
 #include "graph.hpp"
@@ -38,6 +40,30 @@
 
 namespace jup {
 
+
+Batch_data Training_data::batch(int index) {
+    Batch_data result;
+    result.edge_weights = {&batch_data[index * hyp.floats_batch()], hyp.floats_edge_weights()};
+    result.results = {result.edge_weights.end(), hyp.floats_results()};
+    assert(result.results.end() <= batch_data.end());
+    assert(result.results.end() == batch_data.begin() + (index + 1) * hyp.floats_batch());
+    return result;
+}
+Batch_data Training_data::instance(int index) {
+    int i_b = index / hyp.batch_size;
+    int i_i = index % hyp.batch_size;
+    Batch_data b = batch(i_b);
+    int n = hyp.batch_nodes * hyp.batch_nodes;
+    return {b.edge_weights.subview(i_i * n, n), b.results.subview(i_i, 1)};
+}
+
+Unique_ptr_free<Training_data> Training_data::make_unique(Hyperparam hyp) {
+    Unique_ptr_free<Training_data> result {(Training_data*)std::calloc(sizeof(Training_data) + hyp.bytes_total(), 1)};
+    result->hyp = hyp;
+    result->batch_data.m_size = hyp.floats_total();
+    return result;
+}
+
 #define UNINITIALIZED(x) union {char JUP_UNIQUE_NAME(__dummy) = 0; x;}
 
 struct Network_state {
@@ -54,7 +80,7 @@ struct Network_state {
 
     int step = 0;
 
-    UNINITIALIZED( tensorflow::ClientSession session    );
+    UNINITIALIZED( tensorflow::ClientSession session     );
     UNINITIALIZED( tensorflow::EventsWriter event_writer );
 };
 
@@ -161,11 +187,6 @@ Network_state* network_init() {
 
     return state;
 }
-
-struct Batch_data {
-    Array_view<float> edge_weights;
-    Array_view<float> results;
-};
 
 void network_batch(Network_state* state, Batch_data const& data) {
     using namespace tensorflow;
@@ -319,6 +340,14 @@ struct Neighbourhood_finder {
 __jup_dbg(Node_prio, weight)
 
 int interpolation_search(Array_view<Node_prio> arr, u32 node) {
+    if (arr.size() < 256) {
+        int result = 0;
+        for (int i = 0; i < arr.size(); ++i) {
+            result += arr[i].node < node;
+        }
+        return (result < arr.size() and arr[result].node == node) ? result : -1;
+    }
+    
     int beg = 0;
     int end = arr.size() - 1;
 
@@ -340,6 +369,7 @@ int interpolation_search(Array_view<Node_prio> arr, u32 node) {
 }
 
 Array_view<u32> Neighbourhood_finder::find(Graph const& graph, u32 node, int count) {
+    nodes.reserve(16);
     nodes.reset();
     result.reset();
 
@@ -357,7 +387,9 @@ Array_view<u32> Neighbourhood_finder::find(Graph const& graph, u32 node, int cou
             if (index != -1) {
                 nodes[index].weight += i.weight;
             } else {
-                nodes.push_back({i.other, i.weight});
+                if (i.weight > 2 or (int)i.weight > nodes.size()) {
+                    nodes.push_back({i.other, i.weight});
+                }
             }
         }
 
@@ -367,16 +399,17 @@ Array_view<u32> Neighbourhood_finder::find(Graph const& graph, u32 node, int cou
 
         auto f = [](u32 x) { return (x-1)*(x-1); };
 
-        //jdbg >= nodes ,0;
         int sum = 0;
         for (int i = 0; i < nodes.size(); ++i) {
             sum += f(nodes[i].weight);
+            
         }
+        
         int arg = -1;
         if (sum == 0) {
-            arg = jup_rand_uni(nodes.size());
+            arg = global_rng.gen_uni(nodes.size());
         } else {        
-            int val = jup_rand_uni(sum);
+            int val = global_rng.gen_uni(sum);
             for (int i = 0; i < nodes.size(); ++i) {
                 val -= f(nodes[i].weight);
                 if (val < 0) {
@@ -392,7 +425,6 @@ Array_view<u32> Neighbourhood_finder::find(Graph const& graph, u32 node, int cou
         nodes.addsize(-1);
     }
 
-
     while (result.size() < count) {
         result.push_back(-1);
     }
@@ -403,7 +435,7 @@ Array_view<u32> Neighbourhood_finder::find(Graph const& graph, u32 node, int cou
     return result;
 }
 
-
+#if 0
 void network_main() {
     using namespace tensorflow;
     using namespace tensorflow::ops;
@@ -438,8 +470,19 @@ void network_main() {
             if (cur_batch == 0) {
                 std::memset(out_edge_weights.data(), 0, out_edge_weights.size() * sizeof(float));
             }
-            
-            u32 node = jup_rand_uni(state_graph.graph->num_nodes());
+
+            // Find a node that is not isolated
+            int viable = 0;
+            for (int i = 0; i < state_graph.graph->num_nodes(); ++i) {
+                viable += state_graph.graph->adjacent(i).size() > 0;
+            }
+            int viable_node = global_rng.gen_uni(viable);
+            u32 node;
+            for (node = 0; node < state_graph.graph->num_nodes(); ++node) {
+                viable -= state_graph.graph->adjacent(node).size() > 0;
+                if (viable == viable_node) break;
+            }
+            assert(node < state_graph.graph->num_nodes());
             auto nodes = neighbours.find(*state_graph.graph, node, 16);
 
             /*
@@ -467,12 +510,12 @@ void network_main() {
             }
 
             // Whether to have a positive or a negative example
-            if (jup_rand_bool()) {
+            if (global_rng.gen_bool()) {
                 /*
                 for (int i = 0; i < 32; ++i) {
                     // Swap edges a and b
-                    u32 a = jup_rand_uni(256 - 16);
-                    u32 b = jup_rand_uni(256 - 16 - 1);
+                    u32 a = global_rng.gen_uni(256 - 16);
+                    u32 b = global_rng.gen_uni(256 - 16 - 1);
                     b += b >= a;
                     a += a / 16 + 1;
                     b += b / 16 + 1;
@@ -489,7 +532,7 @@ void network_main() {
                 
                 for (int i = 0; i < 32; ++i) {
                     // Add 10 to a random edge
-                    u32 a = jup_rand_uni(256 - 16);
+                    u32 a = global_rng.gen_uni(256 - 16);
                     a += a / 16 + 1;
 
                     out_edge_weights[cur_batch*256 + a] += 10;
@@ -534,43 +577,56 @@ void network_main() {
     graph_reader_close(&state_graph);
     network_free(state_net);
 }
+#endif
 
-
-void network_gendata(jup_str graph_file, Training_data* data) {
+void network_generate_data(jup_str graph_file, Training_data* data) {
     assert(data);
+    assert(data->hyp.valid());
+
+    jout << "Generating training data... ("
+         << nice_bytes(data->hyp.bytes_total()) << ")" << endl;
+    Timer timer {(u64)(data->hyp.batch_count * data->hyp.batch_size)};
 
     Graph_reader_state state_graph;
     graph_reader_init(&state_graph, graph_file);
 
     Neighbourhood_finder neighbours;
-    
+
     int graph_left = 0;
     int cur_batch = 0;
     int cur_instance = 0;
 
-    while (cur_batch < batch_count) {
-        Batch_data& out = data->batches[cur_batch];
+    while (cur_batch < data->hyp.batch_count) {
+        Batch_data out = data->batch(cur_batch);
         
         if (graph_left == 0) {
             bool c = graph_reader_next(&state_graph);
             if (not c) {
-                jout << "  Rewind for more data" << endl;
+                jout << "  Rewinding for more data" << endl;
                 graph_reader_reset(&state_graph);
                 c = graph_reader_next(&state_graph);
                 assert(c);
             }
                 
-            graph_left = state_graph.graph->num_nodes() / gen_graph_nodes;
-            jdbg < "Loading graph" < state_graph.graph->name.begin() < graph_left ,0;
+            graph_left = state_graph.graph->num_nodes() / data->hyp.gen_graph_nodes;
+            //jdbg < "Loading graph" < state_graph.graph->name.begin() < graph_left ,0;
             if (graph_left == 0) continue;
         }
 
-        while (cur_instance < batch_size) {
+        if (timer.update()) {
+            auto s = jup_printf(" (batch %d/%d, instance %d/%d, graph %s, ", cur_batch, data->hyp.batch_count,
+                cur_instance, data->hyp.batch_size, state_graph.graph->name.begin());
+            jout << "  Currently at " << timer.progress(cur_batch * data->hyp.batch_size + cur_instance) << s
+                 << timer.bytes(cur_batch * data->hyp.bytes_batch() + cur_instance * data->hyp.bytes_instance())
+                 << ")" << endl;
+        }
+
+        while (cur_instance < data->hyp.batch_size) {
             if (cur_instance == 0) {
                 std::memset(out.edge_weights.data(), 0, out.edge_weights.size() * sizeof(float));
             }
             
-            u32 node = jup_rand_uni(state_graph.graph->num_nodes());
+            u32 node = global_rng.gen_uni(state_graph.graph->num_nodes());
             auto nodes = neighbours.find(*state_graph.graph, node, 16);
 
             for (int i = 0; i < nodes.size(); ++i) {
@@ -585,12 +641,12 @@ void network_gendata(jup_str graph_file, Training_data* data) {
             }
 
             // Whether to have a positive or a negative example
-            if (jup_rand_bool()) {
+            if (global_rng.gen_bool()) {
                 /*
                 for (int i = 0; i < 32; ++i) {
                     // Swap edges a and b
-                    u32 a = jup_rand_uni(256 - 16);
-                    u32 b = jup_rand_uni(256 - 16 - 1);
+                    u32 a = global_rng.gen_uni(256 - 16);
+                    u32 b = global_rng.gen_uni(256 - 16 - 1);
                     b += b >= a;
                     a += a / 16 + 1;
                     b += b / 16 + 1;
@@ -607,7 +663,7 @@ void network_gendata(jup_str graph_file, Training_data* data) {
                 
                 for (int i = 0; i < 32; ++i) {
                     // Add 10 to a random edge
-                    u32 a = jup_rand_uni(256 - 16);
+                    u32 a = global_rng.gen_uni(256 - 16);
                     a += a / 16 + 1;
 
                     out.edge_weights[cur_instance*256 + a] += 10;
@@ -633,8 +689,7 @@ void network_gendata(jup_str graph_file, Training_data* data) {
             }
             jdbg ,0;
             if (cur_instance == 5) std::exit(0);*/
-            
-            
+
             ++cur_instance;
             --graph_left;
 
@@ -642,15 +697,83 @@ void network_gendata(jup_str graph_file, Training_data* data) {
         }
 
         
-        if (cur_instance == batch_size) {
+        if (cur_instance == data->hyp.batch_size) {
             cur_instance = 0;
             ++cur_batch;
         }
     }
 
     graph_reader_close(&state_graph);
-    network_free(state_net);
+
+    jout << "Done. (" << timer.total() << ")" << endl;
 }
+
+void network_shuffle(Training_data* from, Training_data* into) {
+    assert(from and into);
+    assert(from->hyp.valid() and into->hyp.valid());
+
+    if (from->hyp.batch_nodes != into->hyp.batch_nodes) {
+        jerr << "Error: Incompatible sets of hyperhypeters, different number of nodes per "
+             << "instance (have: " << from->hyp.batch_nodes << ", want: "
+             << into->hyp.batch_nodes << ")\n";
+        die();
+    } else if (from->hyp.floats_total() < into->hyp.floats_total()) {
+        jerr << "Error: Incompatible sets of hyperhypeters, there is not enough data to fill the "
+             << "target (have: " << from->hyp.floats_total() << " floats, want: "
+             << into->hyp.floats_total() << " floats)\n";
+        die();
+    }
+    
+    Timer timer;
+
+    Array<int> left;
+    left.resize(from->hyp.num_instances());
+    for (int i = 0; i < left.size(); ++i) left[i] = i;
+
+    Rng rng;
+    for (int i = 0; i < into->hyp.num_instances(); ++i) {
+        int index = rng.gen_uni(left.size());
+        int j = left[index];
+        left[index] = left.pop_back();
+
+        // Move instance j into instance i
+        auto j_inst = from->instance(j);
+        auto i_inst = into->instance(i);
+        jup_memcpy(&i_inst.edge_weights, j_inst.edge_weights);
+        jup_memcpy(&i_inst.results, j_inst.results);
+    }
+    
+    jout << "Done. (" << timer.total() << ")" << endl;
+}
+
+u64 hash_order_independent(Training_data* data) {
+    u64 hash = 0;
+    for (int i = 0; i < data->hyp.num_instances(); ++i) {
+        auto inst = data->instance(i);
+        hash += inst.edge_weights.get_hash() + inst.results.get_hash();
+    }
+    return hash;
+}
+
+void network_prepare_data(jup_str graph_file, jup_str data_file, Hyperparam hyp) {
+    // Test whether we can write to the file
+    save_bytes(data_file, (u32)0);
+
+    jout << "Preparing data (" << hyp << ")" << endl;
+    auto data = Training_data::make_unique(hyp);
+    network_generate_data(graph_file, data.get());
+
+    u64 hash_val_oi = hash_order_independent(data.get());
+    jout << "Shuffling... (shuffle-invariant checksum: " << nice_hex(hash_val_oi) << ")" << endl;
+    auto data2 = Training_data::make_unique(hyp);
+    network_shuffle(data.get(), data2.get());
+    assert(hash_val_oi == hash_order_independent(data2.get()));
+
+    u64 hash_val = XXH64(data.get(), data->byte_size(), 0);
+    jout << "Writing to file " << data_file << ", Checksum (xxHash64): " << nice_hex(hash_val) << endl;
+    save_bytes(data_file, *data);
+}
+
 
 
 /*static void network_run_op(Network_state* state, jup_str name) {

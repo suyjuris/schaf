@@ -93,7 +93,7 @@ int get_terminal_width() {
     int width = info.srWindow.Right - info.srWindow.Left + 1;
     
     // This does not always work, make 80 minimum as a workaround
-    if (width == 1) width = 80;
+    if (width <= 1) width = 80;
     return width;
 }
 

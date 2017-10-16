@@ -153,7 +153,7 @@ struct Array_view {
         return {data(), size() * sizeof(T)};
     }
 
-	u32 get_hash() const {
+	u64 get_hash() const {
         return as_bytes().get_hash();
 	}
 
@@ -182,14 +182,23 @@ struct Array_view_mut {
 	
 	int size() const { return m_size; }
 	
-	T* begin() const { return m_data; }
-	T* end()   const { return m_data + m_size; }
-    T* data()  const { return begin(); }
+	T const* begin() const { return m_data; }
+	T const* end()   const { return m_data + m_size; }
+    T const* data()  const { return begin(); }
+	T* begin() { return m_data; }
+	T* end()   { return m_data + m_size; }
+    T* data()  { return begin(); }
 
+    T const& front() const { return (*this)[0]; }
+    T const& back() const { return (*this)[size() - 1]; }
     T& front() { return (*this)[0]; }
     T& back() { return (*this)[size() - 1]; }
     
-	T& operator[] (int pos) {
+	T const& operator[] (int pos) const {
+		assert(0 <= pos and pos < size());
+		return data()[pos];
+	}
+    T& operator[] (int pos) {
 		assert(0 <= pos and pos < size());
 		return data()[pos];
 	}
@@ -201,16 +210,21 @@ struct Array_view_mut {
 		return result;
 	}
 
+    Array_view<T> subview(int pos, int size_) const {
+        assert(0 <= pos and pos + size_ <= size());
+        return {data() + pos, size_};
+    }
     Array_view_mut<T> subview(int pos, int size_) {
         assert(0 <= pos and pos + size_ <= size());
         return {data() + pos, size_};
     }
     
     Buffer_view as_bytes() const {
-        return {data(), size() * sizeof(T)};
+        static_assert(sizeof(T) < std::numeric_limits<int>::max());
+        return {data(), size() * (int)sizeof(T)};
     }
 
-	u32 get_hash() const {
+	u64 get_hash() const {
         return as_bytes().get_hash();
 	}
 
@@ -229,13 +243,18 @@ struct Array_view_mut {
 	int m_size;
 };
 
+#define __jup_stack_array(T, size) Array_view_mut<T>{(T*)alloca(sizeof(T) * (size)), (size)}
+
 template <typename T, int m_size>
 struct Array_inline {
 	constexpr int size() const { return m_size; }
 	
-	T* begin() const { return m_data; }
-	T* end()   const { return m_data + m_size; }
-    T* data()  const { return begin(); }
+	T* begin() { return m_data; }
+	T* end()   { return m_data + m_size; }
+    T* data()  { return begin(); }
+	T const* begin() const { return m_data; }
+	T const* end()   const { return m_data + m_size; }
+    T const* data()  const { return begin(); }
 
     T& front() { return (*this)[0]; }
     T& back() { return (*this)[size() - 1]; }
@@ -256,21 +275,26 @@ struct Array_inline {
         assert(0 <= pos and pos + size_ <= size());
         return {data() + pos, size_};
     }
+
+    Array_view_mut<T> subview(int pos, int size_) {
+        assert(0 <= pos and pos + size_ <= size());
+        return {data() + pos, size_};
+    }
     
     Buffer_view as_bytes() const {
         return {data(), size() * sizeof(T)};
     }
 
-	u32 get_hash() const {
+	u64 get_hash() const {
         return as_bytes().get_hash();
 	}
     
-	bool operator== (Array_inline<T> const& other) const {
-        return as_bytes() == other.as_bytes();
+	bool operator== (Array_inline<T, m_size> const& o) const {
+        return as_bytes() == o.as_bytes();
 	}
-	bool operator!= (Array_inline const& buf) const { return !(*this == buf); }
+	bool operator!= (Array_inline<T, m_size> const& o) const { return !(*this == o); }
     
-	T m_data[size] {};
+	T m_data[m_size] {};
 };
 
 } /* end of namespace jup */

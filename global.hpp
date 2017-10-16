@@ -14,6 +14,7 @@
 // general headers
 #include <algorithm>
 #include <cerrno>
+#include <cinttypes>
 #include <cmath>
 #include <csignal>
 #include <cstdint>
@@ -25,7 +26,9 @@
 #include <limits>   
 #include <memory>
 #include <ostream>
+#include <random>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 // zlib
@@ -67,6 +70,9 @@
 #define __JUP_UNIQUE_NAME2(x, y) __JUP_UNIQUE_NAME1(x, y)
 #define JUP_UNIQUE_NAME(x) __JUP_UNIQUE_NAME2(x, __COUNTER__)
 
+#define __JUP_STRINGIFY1(x) #x
+#define JUP_STRINGIFY(x) __JUP_STRINGIFY1(x)
+
 namespace jup {
 
 // Standard integer types
@@ -104,7 +110,7 @@ inline T narrow(R from) {
 }
 
 // Closes the program violently
-[[noreturn]] void die(); // implemented in system_win32.cpp
+[[noreturn]] void die();
 [[noreturn]] void die(char const* msg, int code = 0);
 
 // Registers a signal handler to print things nicely

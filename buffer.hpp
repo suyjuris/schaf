@@ -85,15 +85,7 @@ struct Buffer_view {
 	 * Generate a simple hash of the contents of this Buffer_view. An empty
 	 * buffer must have a hash of 0.
 	 */
-	u32 get_hash() const {
-        // FNV-1a algorithm
-		u32 result = 2166136261;
-		for (char c: *this) {
-			result = (result ^ c) * 16777619;
-		}
-        // Always return 0 when the buffer is empty
-		return result ^ 2166136261;
-	}
+	u64 get_hash() const;
 
 	/**
 	 * Compare for byte-wise equality. 
@@ -139,6 +131,7 @@ struct Buffer_guard {
     bool trap_alloc;
 
     Buffer_guard(): buf{nullptr}, size_target{0}, trap_alloc{false} {}
+    Buffer_guard(Buffer& buf);
     Buffer_guard(Buffer& buf, int size_incr);
 
     Buffer_guard(Buffer_guard&& g) {
@@ -152,8 +145,10 @@ struct Buffer_guard {
         std::swap(trap_alloc, g.trap_alloc);
         return *this;
     }
+
+    ~Buffer_guard() { free(); }
     
-    ~Buffer_guard();
+    void free();
 };
 
 /**
@@ -218,7 +213,7 @@ public:
 	 */
 	void reserve(int newcap) {
 		if (capacity() < newcap) {
-			assert(!trap_alloc());
+			assert(not trap_alloc());
 			newcap = std::max(newcap, capacity() * 2);
 			if (m_data) {
 				m_data = (char*)std::realloc(m_data, newcap);
@@ -231,9 +226,31 @@ public:
 		}
 	}
 
+    /**
+     * Ensure that at least incr space remains in the buffer (as if
+     * reserve_space(incr) had been called). Returns a guard object that checks,
+     * upon its destruction, whether the size of buffer has increased by exactly
+     * incr bytes. Additionally, the trap_alloc flag is set for the lifetime of
+     * the guard object. Recommended usage:
+     *   {
+     *     auto guard = buffer.reserve_guard(size);
+     *     // Do something that adds exactly size bytes to the buffer while
+     *     // enjoying a lack of reallocation
+     *   }
+     *     // guard goes out of scope, ensuring that exactly size bytes have
+     *     // been inserted. 
+     */
     auto reserve_guard(int incr) {
         reserve_space(incr);
         return Buffer_guard {*this, incr};
+    }
+
+    /**
+     * Similar to reserve_guard, but does not check the size increase and only
+     * sets the trap_alloc flag.
+     */
+    auto alloc_guard() {
+        return Buffer_guard {*this};
     }
     
 	/**
@@ -378,7 +395,7 @@ public:
 		return *(T*)(m_data + offset);
 	}
 	template <typename T>
-	T const& get_c(int offset = 0) const {
+	T const& get(int offset = 0) const {
         assert(size() >= (int)(offset + sizeof(T)));
 		return *(T const*)(m_data + offset);
 	}
@@ -437,7 +454,7 @@ public:
         auto flags = (binary ? (std::ios::ate | std::ios::binary) : std::ios::ate);
 		i.open(filename.c_str(), flags);
         std::streamsize fsize = i.tellg();
-        assert(fsize <= (std::streamsize)maxsize);
+        assert(maxsize == -1 or fsize <= (std::streamsize)maxsize);
         i.seekg(0, std::ios::beg);
         reserve_space(fsize);
         i.read(end(), fsize);
@@ -449,26 +466,43 @@ public:
     /**
      * Return whether the pointer is inside the buffer
      */
+    // duplicates Buffer_view::inside and Buffer_view::valid
     template <typename T>
     bool inside(T const* ptr) const {
-        // duplicates Buffer_view::inside
+        return inside((char const*)ptr, sizeof(T));
+    }
+    bool inside(char const* ptr, int size) const {
         return (void const*)begin() <= (void const*)ptr
-            and (void const*)(ptr + 1) <= (void const*)end();
+            and (void const*)(ptr + size) <= (void const*)end();
+    }
+    template <typename T>
+    bool valid(T const* ptr) const {
+        return valid((char const*)ptr, sizeof(T));
+    }
+    bool valid(char const* ptr, int size) const {
+        return (void const*)begin() <= (void const*)ptr
+            and (void const*)(ptr + size) <= (void const*)(data() + capacity());
     }
     
 	char* m_data = nullptr;
 	int m_size = 0, m_capacity = 0;
 };
 
+inline Buffer_guard::Buffer_guard(Buffer& buf):
+    buf{&buf}, size_target{-1}, trap_alloc{buf.trap_alloc()}
+{
+    buf.trap_alloc(true);
+}
 inline Buffer_guard::Buffer_guard(Buffer& buf, int size_incr):
     buf{&buf}, size_target{buf.size() + size_incr}, trap_alloc{buf.trap_alloc()}
 {
     buf.trap_alloc(true);
 }
-inline Buffer_guard::~Buffer_guard() {
+inline void Buffer_guard::free() {
     if (buf) {
-        assert(buf->size() == size_target);
+        assert(size_target == -1 or buf->size() == size_target);
         buf->trap_alloc(trap_alloc);
+        buf = nullptr;
     }
 }
 

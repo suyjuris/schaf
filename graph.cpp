@@ -3,7 +3,7 @@
 #include "libs/lz4.hpp"
 #include "libs/xxhash.hpp"
 
-#include "allocator.hpp"
+#include "arena.hpp"
 #include "array.hpp"
 #include "graph.hpp"
 #include "debug.hpp"
@@ -194,7 +194,7 @@ static void calculate_diff(
 void graph_generate_single(Alarm_stream* stream, jup_str repo, std::ostream* out) {
     Map_commits_t commits;
     Map_trees_t trees;
-    Arena_allocator arena;
+    Arena arena;
     
     while (not alarm_parse_eof(stream)) {
         alarm_progress(stream);
