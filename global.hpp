@@ -93,9 +93,6 @@ using u8 = std::uint8_t;
 [[noreturn]] void _assert_win_fail(char const* expr_str, char const* file, int line);
 #endif
 
-// Prints the error nicely into the console
-void err_msg(char const* msg, int code = 0);
-
 // Narrow a value, asserting that the conversion is valid.
 template <typename T, typename R>
 inline void narrow(T& into, R from) {
@@ -111,7 +108,6 @@ inline T narrow(R from) {
 
 // Closes the program violently
 [[noreturn]] void die();
-[[noreturn]] void die(char const* msg, int code = 0);
 
 // Registers a signal handler to print things nicely
 void init_signals();

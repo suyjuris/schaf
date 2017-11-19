@@ -4,6 +4,7 @@
 #include "array.hpp"
 #include "buffer.hpp"
 #include "graph.hpp"
+#include "options.hpp"
 #include "network.hpp"
 #include "system.hpp"
 #include "utilities.hpp"
@@ -40,7 +41,6 @@
 
 namespace jup {
 
-
 Batch_data Training_data::batch(int index) {
     Batch_data result;
     result.edge_weights = {&batch_data[index * hyp.floats_batch()], hyp.floats_edge_weights()};
@@ -72,13 +72,21 @@ struct Network_state {
         event_writer.~EventsWriter();
         session.~ClientSession();
     }
+
+    Hyperparam hyp;
     
     tensorflow::Scope root;
     
-    tensorflow::Operation update_op;
+    tensorflow::Operation update_op, save_op, restore_op;
     tensorflow::Output x, y, rate, loss, summary_op, print_op;
+    
+    std::vector<tensorflow::Output> params;
 
     int step = 0;
+
+    Timer timer;
+    float loss_sum = 0;
+    int loss_count = 0;
 
     UNINITIALIZED( tensorflow::ClientSession session     );
     UNINITIALIZED( tensorflow::EventsWriter event_writer );
@@ -86,32 +94,35 @@ struct Network_state {
 
 #undef UNINITIALIZED
 
-Network_state* network_init() {
+Network_state* network_init(Hyperparam hyp) {
     using namespace tensorflow;
     using namespace tensorflow::ops;
 
     auto state = new Network_state;
     Scope& root = state->root;
 
+    state->hyp = hyp;
+
     auto shape_scalar = Const<int>(root, 0, {0});
 
     // Network layout
     auto name = [&root](std::string str) { return root.WithOpName(str); };
     
-    auto x    = Placeholder(name("x"),    DT_FLOAT, Placeholder::Shape({32, 256}));
-    auto y    = Placeholder(name("y"),    DT_FLOAT, Placeholder::Shape({32}));
-    auto rate = Placeholder(name("rate"), DT_FLOAT, Placeholder::Shape({}));
-
-    auto w1 = Variable(name("w1"), {256, 64}, DT_FLOAT);
-    auto b1 = Variable(name("b1"), {64}, DT_FLOAT);
+    auto x = Placeholder(name("x"), DT_FLOAT, Placeholder::Shape({hyp.batch_size, hyp.batch_edges()}));
+    auto y = Placeholder(name("y"), DT_FLOAT, Placeholder::Shape({hyp.batch_size}));
     
-    auto w2 = Variable(name("w2"), {64, 1}, DT_FLOAT);
-    auto b2 = Variable(name("b2"), {1}, DT_FLOAT);
+    auto rate = Variable(name("rate"), {}, DT_FLOAT);
+
+    auto w1 = Variable(name("w1"), {hyp.batch_edges(), hyp.a1_size}, DT_FLOAT);
+    auto b1 = Variable(name("b1"), {hyp.a1_size}, DT_FLOAT);
+    
+    auto w2 = Variable(name("w2"), {hyp.a1_size, hyp.a2_size}, DT_FLOAT);
+    auto b2 = Variable(name("b2"), {hyp.a2_size}, DT_FLOAT);
 
     auto a     = Tanh(name("a"),     BiasAdd(root, MatMul(root, x, w1), b1));
     auto y_out = Tanh(name("y_out"), BiasAdd(root, MatMul(root, a, w2), b2));
 
-    auto loss = L2Loss(name("loss"), Sub(root, Reshape(root, y_out, {32}), y));
+    auto loss = L2Loss(name("loss"), Sub(root, Reshape(root, y_out, {hyp.batch_size}), y));
 
     // Update
     std::vector<Output> grad_vars {w1, b1, w2, b2};
@@ -148,12 +159,35 @@ Network_state* network_init() {
     auto init = root.NewSubScope("init");
     std::vector<Operation> init_ops;
     auto add_init_op = [&init_ops](Output output) { init_ops.push_back(output.op()); };
-    add_init_op( Assign(init, w1, ParameterizedTruncatedNormal(init, {256, 64}, 0.f, .05f, -1.f, 1.f)) );
-    add_init_op( Assign(init, w2, ParameterizedTruncatedNormal(init, { 64,  1}, 0.f, .05f, -1.f, 1.f)) );
-    add_init_op( Assign(init, b1, Const<float>(init, 0.f, {64})) );
-    add_init_op( Assign(init, b2, Const<float>(init, 0.f, {1}  )) );
+    add_init_op( Assign(init, w1, ParameterizedTruncatedNormal(init, {hyp.batch_edges(), hyp.a1_size}, 0.f, .05f, -1.f, 1.f)) );
+    add_init_op( Assign(init, w2, ParameterizedTruncatedNormal(init, {hyp.a1_size, hyp.a2_size}, 0.f, .05f, -1.f, 1.f)) );
+    add_init_op( Assign(init, b1, Const<float>(init, 0.f, {hyp.a1_size})) );
+    add_init_op( Assign(init, b2, Const<float>(init, 0.f, {hyp.a2_size}  )) );
+    add_init_op( Assign(init, rate, Const<float>(init, global_options.hyp.learning_rate, {})) );
     auto init_op = NoOp(init.WithControlDependencies(init_ops).WithOpName("run"));
 
+    // Checkpoints
+    auto checkpoint = root.NewSubScope("checkpoint");
+    std::vector<Output> params_op       { rate,   w1,   b1,   w2,   b2 };
+    std::vector<std::string> params_str {"rate", "w1", "b1", "w2", "b2"};
+    
+    Tensor params_name  {DT_STRING, {(int)params_op.size()}}; 
+    Tensor params_slice {DT_STRING, {(int)params_op.size()}}; 
+    std::vector<DataType>    params_type  {params_op.size(), DT_FLOAT};
+    for (int i = 0; i < (int)params_op.size(); ++i) {
+        params_name.flat<std::string>()(i) = params_str[i];
+    }
+    state->save_op = SaveV2(checkpoint.WithOpName("save"), std::string {global_options.param_out},
+        params_name, params_slice, params_op);
+
+    auto restore_op_main = RestoreV2(checkpoint, std::string {global_options.param_in},
+        params_name, params_slice, params_type);
+    std::vector<Operation> restore_ops;
+    for (int i = 0; i < (int)params_op.size(); ++i) {
+        restore_ops.push_back( Output {Assign(checkpoint, params_op[i], restore_op_main[i])}.op() );
+    }
+    state->restore_op = NoOp(init.WithControlDependencies(restore_ops).WithOpName("restore"));
+    
     // Write graph information
     using google::protobuf::TextFormat;
     using google::protobuf::io::OstreamOutputStream;
@@ -193,123 +227,107 @@ void network_batch(Network_state* state, Batch_data const& data) {
     using namespace tensorflow::ops;
 
     assert(state);
-    assert(data.edge_weights.size() == 32*256 and data.results.size() == 32);
 
+    auto hyp = state->hyp;
+    
     ++state->step;
     
-    Tensor data_x {DT_FLOAT, {32, 256}};
+    Tensor data_x {DT_FLOAT, {hyp.batch_size, hyp.batch_edges()}};
     std::memcpy(data_x.flat<float>().data(), data.edge_weights.data(), data.edge_weights.size() * sizeof(float));
+
+    //for (int i = 0; i < 16; ++i)
+    //    jdbg >= Array_view<float> {data_x.flat<float>().data()+16*i, 16} ,0;
     
-    Tensor data_y {DT_FLOAT, {32}};
+    Tensor data_y {DT_FLOAT, {hyp.batch_size}};
     std::memcpy(data_y.flat<float>().data(), data.results.data(), data.results.size() * sizeof(float));
     
     std::vector<Tensor> outputs;
     TF_CHECK_OK(state->session.Run(
-        {{state->x, data_x}, {state->y, data_y}, {state->rate, state->step < 200 ? 0.001f : 0.0001f}},
+        {{state->x, data_x}, {state->y, data_y}},
         {state->loss, state->summary_op},
         {state->update_op},
         &outputs
     ));
+
+    state->loss_sum += outputs[0].scalar<float>()();
+    state->loss_count++;
     
-    std::cout << "Loss:  " << outputs[0].scalar<float>()() << endl;
-
-#if 0
-    GraphDef graph_def;
-    TF_CHECK_OK( state->root.ToGraphDef(&graph_def) );
-    Session* session;
-    SessionOptions options;
-    TF_CHECK_OK( NewSession(options, &session) );
-    TF_CHECK_OK( session->Create(graph_def) );
-
-    Tensor data_rate {DT_FLOAT, {}};
-    data_rate.scalar<float>()() = 0.01f;
-    TF_CHECK_OK(session->Run(
-        {},
-        {},
-        {"init/run"},
-        &outputs
-    ));
-    std::vector<std::string> node_names;
-    for (int i = 0; i < graph_def.node_size(); ++i) {
-        OpDef const* op_def;
-        TF_CHECK_OK( OpRegistry::Global()->LookUpOpDef(graph_def.node(i).op(), &op_def) );
-        if (op_def->name() == "Placeholder") continue;
-        int output_size = op_def->output_arg_size();
-        for (int j = 0; j < output_size; ++j) {
-            node_names.push_back(graph_def.node(i).name() + jup_printf(":%d", j).c_str());
+    if (state->timer.update()) {
+        jout << "  Loss:  " << jup_printf("%.1f", state->loss_sum / state->loss_count) << " (iteration " << state->step;
+        if (global_options.iter_max < std::numeric_limits<int>::max()) {
+            jout << "/" << global_options.iter_max;
         }
-    }
-    jdbg >= node_names ,0;
-    
-    outputs.clear();
-    TF_CHECK_OK(session->Run(
-        {{"x", data_x}, {"y", data_y}, {"rate", data_rate}},
-        node_names,
-        {},
-        &outputs
-    ));
+        jout << ", " << state->timer.counter(state->step) << " iter/s)" << endl;
 
-    node_names.push_back("x");
-    node_names.push_back("y");
-    outputs.push_back(data_x);
-    outputs.push_back(data_y);
-    size_t id3 = 0;
-    size_t mat_mul3 = 0;
-    for (std::size_t i = 0; i < outputs.size(); ++i) {
-        if (outputs[i].dtype() != DT_FLOAT) continue;
-        if (node_names[i] == "grad/Identity_2:0") id3 = i;
-        if (node_names[i] == "grad/MatMul_3:0") mat_mul3 = i;
-        jdbg < node_names[i] < outputs[i].flat<float>().size() >= Array_view<float> {outputs[i].flat<float>().data(),
-                std::min((int)outputs[i].flat<float>().size(), 100)} ,0;
+        state->loss_sum = 0;
+        state->loss_count = 0;
     }
-
-    
-    {auto mat = data_x.matrix<float>();
-        /*for (int i = 0; i < mat.dimension(0); ++i) {
-        jdbg >= Array_view<float> {mat.data() + i*mat.dimension(1), (int)mat.dimension(1)} ,0;;
-        }*/
-    for (int i = 0; i < mat.dimension(1); ++i) {
-        for (int j = 0; j < mat.dimension(0); ++j) {
-            jdbg < mat(j, i);
-        }
-        jdbg ,0;
-    }
-    jdbg ,4;}
-
-    {auto mat = outputs[id3].matrix<float>();
-    
-    for (int i = 0; i < mat.dimension(1); ++i) {
-        for (int j = 0; j < mat.dimension(0); ++j) {
-            jdbg < mat(j, i);
-        }
-        jdbg ,0;
-    }
-    /*for (int i = 0; i < mat.dimension(0); ++i) {
-        jdbg >= Array_view<float> {mat.data() + i*mat.dimension(1), (int)mat.dimension(1)} ,0;;
-        }*/
-    jdbg ,4;}
-    {auto mat = outputs[mat_mul3].matrix<float>();
-    
-    for (int i = 0; i < mat.dimension(1); ++i) {
-        for (int j = 0; j < mat.dimension(0); ++j) {
-            jdbg < mat(j, i);
-        }
-        jdbg ,0;
-    }
-    /*for (int i = 0; i < mat.dimension(0); ++i) {
-        jdbg >= Array_view<float> {mat.data() + i*mat.dimension(1), (int)mat.dimension(1)} ,0;;
-        }*/
-    jdbg ,4;}
-
-    std::exit(0);
-#endif
-    
     
     Event event;
     event.set_wall_time(elapsed_time());
     event.set_step(state->step);
     event.mutable_summary()->ParseFromString(outputs[1].scalar<std::string>()());
     state->event_writer.WriteEvent(event);
+}
+
+/*struct Tensor_data {
+    Flat_array64<char> name;
+    Flat_array64<int> dims;
+    Flat_array64<float> data;
+};
+
+struct Checkpoint {
+    constexpr static u32 magic = 0xe14a9226;
+    
+    Hyperparam hyp;
+    int iter;
+    Flat_array64_const<Tensor_data> tensors;
+    };*/
+
+void network_save(Network_state* state) {
+    using namespace tensorflow;
+    using namespace tensorflow::ops;
+    
+    assert(state);
+
+    TF_CHECK_OK(state->session.Run({}, {}, {state->save_op}, nullptr));
+    
+    /*std::vector<Tensor> outputs;
+    TF_CHECK_OK(state->session.Run({}, state->params, {}, &outputs));
+
+    Buffer buf;
+    
+    int size = sizeof(Checkpoint) + outputs.size() * sizeof(Tensor_data);
+    for (int i = 0; i < outputs.size(); ++i) {
+        size += decltype(Tensor_data{}.name)::extra_space(state->params[i].name().size() + 1);
+        size += decltype(Tensor_data{}.dims)::extra_space(outputs[i].rank());
+        size += decltype(Tensor_data{}.data)::extra_space(outputs[i].size());
+    }
+
+    auto guard = data.reserve_guard(size);
+    auto& checkpoint = data.emplace_back<Checkpoint>();
+    checkpoint.tensors.init(outputs.size(), &buf);
+    
+    for (int i = 0; i < outputs.size(); ++i) {
+        checkpoints[i].name.init(state->params[i].name().size(), &buf);
+        checkpoints[i].dims.init(outputs[i].rank(), &buf);
+        checkpoints[i].data.init(outputs[i].size());
+
+        std::memcpy(checkpoints[i].name.begin(), state->params[i].name().begin(), checkpoints.name.size());
+        for (int j = 0; j < outputs[i].rank(); ++j) {
+            checkpoints[i].dims[j] = outputs[i].dimension(j);
+        }
+        std::memcpy(checkpoints[i].data.begin(), outputs[i].data(), outputs[i].size());
+        }*/
+}
+
+void network_restore(Network_state* state) {
+    using namespace tensorflow;
+    using namespace tensorflow::ops;
+    
+    assert(state);
+
+    TF_CHECK_OK(state->session.Run({}, {}, {state->restore_op}, nullptr));
 }
 
 void network_free(Network_state* state) {
@@ -435,150 +453,6 @@ Array_view<u32> Neighbourhood_finder::find(Graph const& graph, u32 node, int cou
     return result;
 }
 
-#if 0
-void network_main() {
-    using namespace tensorflow;
-    using namespace tensorflow::ops;
-
-    auto state_net = network_init();
-    Graph_reader_state state_graph;
-    graph_reader_init(&state_graph, "graph_data/small.schaf.lz4");
-
-    constexpr int batch_size = 32;
-
-    Neighbourhood_finder neighbours;
-    
-    Array<float> buffer;
-    buffer.reserve(batch_size * (256 + 1));
-
-    Array_view_mut<float> out_edge_weights {buffer.data(), batch_size * 256};
-    Array_view_mut<float> out_results {out_edge_weights.end(), batch_size};
-    
-    int graph_left = 0;
-    int cur_batch = 0;
-
-    while (state_net->step < 500) {
-        if (graph_left == 0) {
-            bool c = graph_reader_next(&state_graph);
-            if (not c) return;
-            graph_left = state_graph.graph->num_nodes() / 32;
-            jdbg < "Loading graph" < state_graph.graph->name.begin() < graph_left ,0;
-            if (graph_left == 0) continue;
-        }
-
-        while (cur_batch < batch_size) {
-            if (cur_batch == 0) {
-                std::memset(out_edge_weights.data(), 0, out_edge_weights.size() * sizeof(float));
-            }
-
-            // Find a node that is not isolated
-            int viable = 0;
-            for (int i = 0; i < state_graph.graph->num_nodes(); ++i) {
-                viable += state_graph.graph->adjacent(i).size() > 0;
-            }
-            int viable_node = global_rng.gen_uni(viable);
-            u32 node;
-            for (node = 0; node < state_graph.graph->num_nodes(); ++node) {
-                viable -= state_graph.graph->adjacent(node).size() > 0;
-                if (viable == viable_node) break;
-            }
-            assert(node < state_graph.graph->num_nodes());
-            auto nodes = neighbours.find(*state_graph.graph, node, 16);
-
-            /*
-            for (int i = 0; i < nodes.size(); ++i) {
-                for (int j = 0; j < nodes.size(); ++j) {
-                    if (j == i) continue;
-                    for (Edge e: state_graph.graph->adjacent(nodes[i])) {
-                        if (e.other == nodes[j]) {
-                            out_edge_weights[cur_batch*256 + i*16 + j] = e.weight;
-                            break;
-                        }
-                    }
-                }
-                }*/
-            
-            for (int i = 0; i < nodes.size(); ++i) {
-                int j = 0;
-                if (nodes[i] == (u32)-1) continue;
-                for (Edge e: state_graph.graph->adjacent(nodes[i])) {
-                    while (j < nodes.size() and e.other > nodes[j]) ++j;
-                    if (j >= nodes.size()) break;
-                    if (e.other != nodes[j]) continue;
-                    out_edge_weights[cur_batch*256 + i*16 + j] = e.weight;
-                }
-            }
-
-            // Whether to have a positive or a negative example
-            if (global_rng.gen_bool()) {
-                /*
-                for (int i = 0; i < 32; ++i) {
-                    // Swap edges a and b
-                    u32 a = global_rng.gen_uni(256 - 16);
-                    u32 b = global_rng.gen_uni(256 - 16 - 1);
-                    b += b >= a;
-                    a += a / 16 + 1;
-                    b += b / 16 + 1;
-
-                    int a_ = (a % 16) * 16 + a / 16;
-                    int b_ = (b % 16) * 16 + b / 16;
-
-                    assert(out_edge_weights[cur_batch*256 + a] == out_edge_weights[cur_batch*256 + a_]);
-                    assert(out_edge_weights[cur_batch*256 + b] == out_edge_weights[cur_batch*256 + b_]);
-                    std::swap(out_edge_weights[cur_batch*256 + a ], out_edge_weights[cur_batch*256 + b ]);
-                    std::swap(out_edge_weights[cur_batch*256 + a_], out_edge_weights[cur_batch*256 + b_]);
-                }
-                */
-                
-                for (int i = 0; i < 32; ++i) {
-                    // Add 10 to a random edge
-                    u32 a = global_rng.gen_uni(256 - 16);
-                    a += a / 16 + 1;
-
-                    out_edge_weights[cur_batch*256 + a] += 10;
-                }
-
-                out_results[cur_batch] = -1.f;
-            } else {
-                out_results[cur_batch] = 1.f;
-            }
-
-            // Normalize
-            float max = 1.f;
-            for (int i = 0; i < 256; ++i) {
-                max = std::max(max, out_edge_weights[cur_batch*256 + i]);
-            }
-            //jdbg < max ,0;
-            for (float& f: out_edge_weights.subview(cur_batch*256, 256)) {
-                f /= max;
-                //f = std::log(f/max*M_E + exp(-1));
-            }
-            /*for (int i = 0; i < 16; ++i) {
-                jdbg >= out_edge_weights.subview(cur_batch*256 + i*16, 16) ,0;
-            }
-            jdbg ,0;
-            if (cur_batch == 5) std::exit(0);*/
-            
-            
-            ++cur_batch;
-            --graph_left;
-
-            if (graph_left == 0) break;
-        }
-
-        
-        if (cur_batch == batch_size) {
-            network_batch(state_net, Batch_data {out_edge_weights, out_results});
-            
-            cur_batch = 0;
-        }
-    }
-
-    graph_reader_close(&state_graph);
-    network_free(state_net);
-}
-#endif
-
 void network_generate_data(jup_str graph_file, Training_data* data) {
     assert(data);
     assert(data->hyp.valid());
@@ -596,16 +470,24 @@ void network_generate_data(jup_str graph_file, Training_data* data) {
     int cur_batch = 0;
     int cur_instance = 0;
 
+    int num_graph = 0;
+    int num_rewind = 0;
+
+    int const n = data->hyp.batch_nodes;
+    int const m = data->hyp.batch_edges();
+
     while (cur_batch < data->hyp.batch_count) {
         Batch_data out = data->batch(cur_batch);
         
         if (graph_left == 0) {
             bool c = graph_reader_next(&state_graph);
+            ++num_graph;
             if (not c) {
                 jout << "  Rewinding for more data" << endl;
                 graph_reader_reset(&state_graph);
                 c = graph_reader_next(&state_graph);
                 assert(c);
+                ++num_rewind;
             }
                 
             graph_left = state_graph.graph->num_nodes() / data->hyp.gen_graph_nodes;
@@ -627,7 +509,7 @@ void network_generate_data(jup_str graph_file, Training_data* data) {
             }
             
             u32 node = global_rng.gen_uni(state_graph.graph->num_nodes());
-            auto nodes = neighbours.find(*state_graph.graph, node, 16);
+            auto nodes = neighbours.find(*state_graph.graph, node, n);
 
             for (int i = 0; i < nodes.size(); ++i) {
                 int j = 0;
@@ -636,7 +518,7 @@ void network_generate_data(jup_str graph_file, Training_data* data) {
                     while (j < nodes.size() and e.other > nodes[j]) ++j;
                     if (j >= nodes.size()) break;
                     if (e.other != nodes[j]) continue;
-                    out.edge_weights[cur_instance*256 + i*16 + j] = e.weight;
+                    out.edge_weights[cur_instance*m + i*n + j] = e.weight;
                 }
             }
 
@@ -645,28 +527,28 @@ void network_generate_data(jup_str graph_file, Training_data* data) {
                 /*
                 for (int i = 0; i < 32; ++i) {
                     // Swap edges a and b
-                    u32 a = global_rng.gen_uni(256 - 16);
-                    u32 b = global_rng.gen_uni(256 - 16 - 1);
+                    u32 a = global_rng.gen_uni(m - n);
+                    u32 b = global_rng.gen_uni(m - n - 1);
                     b += b >= a;
-                    a += a / 16 + 1;
-                    b += b / 16 + 1;
+                    a += a / n + 1;
+                    b += b / n + 1;
 
-                    int a_ = (a % 16) * 16 + a / 16;
-                    int b_ = (b % 16) * 16 + b / 16;
+                    int a_ = (a % n) * n + a / n;
+                    int b_ = (b % n) * n + b / n;
 
-                    assert(out.edge_weights[cur_instance*256 + a] == out.edge_weights[cur_instance*256 + a_]);
-                    assert(out.edge_weights[cur_instance*256 + b] == out.edge_weights[cur_instance*256 + b_]);
-                    std::swap(out.edge_weights[cur_instance*256 + a ], out.edge_weights[cur_instance*256 + b ]);
-                    std::swap(out.edge_weights[cur_instance*256 + a_], out.edge_weights[cur_instance*256 + b_]);
+                    assert(out.edge_weights[cur_instance*m + a] == out.edge_weights[cur_instance*m + a_]);
+                    assert(out.edge_weights[cur_instance*m + b] == out.edge_weights[cur_instance*m + b_]);
+                    std::swap(out.edge_weights[cur_instance*m + a ], out.edge_weights[cur_instance*m + b ]);
+                    std::swap(out.edge_weights[cur_instance*m + a_], out.edge_weights[cur_instance*m + b_]);
                 }
                 */
                 
                 for (int i = 0; i < 32; ++i) {
                     // Add 10 to a random edge
-                    u32 a = global_rng.gen_uni(256 - 16);
-                    a += a / 16 + 1;
+                    u32 a = global_rng.gen_uni(m - n);
+                    a += a / n + 1;
 
-                    out.edge_weights[cur_instance*256 + a] += 10;
+                    out.edge_weights[cur_instance*m + a] += 10;
                 }
 
                 out.results[cur_instance] = -1.f;
@@ -676,16 +558,16 @@ void network_generate_data(jup_str graph_file, Training_data* data) {
 
             // Normalize
             float max = 1.f;
-            for (int i = 0; i < 256; ++i) {
-                max = std::max(max, out.edge_weights[cur_instance*256 + i]);
+            for (int i = 0; i < m; ++i) {
+                max = std::max(max, out.edge_weights[cur_instance*m + i]);
             }
             //jdbg < max ,0;
-            for (float& f: out.edge_weights.subview(cur_instance*256, 256)) {
+            for (float& f: out.edge_weights.subview(cur_instance*m, m)) {
                 f /= max;
                 //f = std::log(f/max*M_E + exp(-1));
             }
-            /*for (int i = 0; i < 16; ++i) {
-                jdbg >= out.edge_weights.subview(cur_instance*256 + i*16, 16) ,0;
+            /*for (int i = 0; i < n; ++i) {
+                jdbg >= out.edge_weights.subview(cur_instance*m + i*n, n) ,0;
             }
             jdbg ,0;
             if (cur_instance == 5) std::exit(0);*/
@@ -705,29 +587,26 @@ void network_generate_data(jup_str graph_file, Training_data* data) {
 
     graph_reader_close(&state_graph);
 
-    jout << "Done. (" << timer.total() << ")" << endl;
+    jout << "Done. (" << timer.total() << ", " << timer.bytes_done(cur_batch * data->hyp.bytes_batch())
+         << ", " << num_graph << " graphs, " << num_rewind << " rewinds)" << endl;
 }
 
-void network_shuffle(Training_data* from, Training_data* into) {
-    assert(from and into);
-    assert(from->hyp.valid() and into->hyp.valid());
+void network_shuffle(Training_data const& from, Training_data* into) {
+    assert(into);
+    assert(from.hyp.valid() and into->hyp.valid());
 
-    if (from->hyp.batch_nodes != into->hyp.batch_nodes) {
-        jerr << "Error: Incompatible sets of hyperhypeters, different number of nodes per "
-             << "instance (have: " << from->hyp.batch_nodes << ", want: "
-             << into->hyp.batch_nodes << ")\n";
-        die();
-    } else if (from->hyp.floats_total() < into->hyp.floats_total()) {
-        jerr << "Error: Incompatible sets of hyperhypeters, there is not enough data to fill the "
-             << "target (have: " << from->hyp.floats_total() << " floats, want: "
-             << into->hyp.floats_total() << " floats)\n";
-        die();
+    if (from.hyp.batch_nodes != into->hyp.batch_nodes) {
+        die("Incompatible sets of hyperparameters, different number of nodes per instance (have: %d"
+            ", want: %d)", from.hyp.batch_nodes, into->hyp.batch_nodes+0);
+    } else if (from.hyp.floats_total() < into->hyp.floats_total()) {
+        die("Incompatible sets of hyperparameters, there is not enough data to fill the target "
+            "(have: %d floats, want: %d floats)", from.hyp.floats_total(), into->hyp.floats_total());
     }
     
     Timer timer;
 
     Array<int> left;
-    left.resize(from->hyp.num_instances());
+    left.resize(from.hyp.num_instances());
     for (int i = 0; i < left.size(); ++i) left[i] = i;
 
     Rng rng;
@@ -737,13 +616,14 @@ void network_shuffle(Training_data* from, Training_data* into) {
         left[index] = left.pop_back();
 
         // Move instance j into instance i
-        auto j_inst = from->instance(j);
+        auto j_inst = const_cast<Training_data&>(from).instance(j);
         auto i_inst = into->instance(i);
         jup_memcpy(&i_inst.edge_weights, j_inst.edge_weights);
         jup_memcpy(&i_inst.results, j_inst.results);
     }
     
-    jout << "Done. (" << timer.total() << ")" << endl;
+    jout << "Done. (" << timer.total()  << ", "
+         << timer.bytes_done(into->hyp.bytes_total()) << ")" << endl;
 }
 
 u64 hash_order_independent(Training_data* data) {
@@ -766,15 +646,103 @@ void network_prepare_data(jup_str graph_file, jup_str data_file, Hyperparam hyp)
     u64 hash_val_oi = hash_order_independent(data.get());
     jout << "Shuffling... (shuffle-invariant checksum: " << nice_hex(hash_val_oi) << ")" << endl;
     auto data2 = Training_data::make_unique(hyp);
-    network_shuffle(data.get(), data2.get());
+    network_shuffle(*data, data2.get());
     assert(hash_val_oi == hash_order_independent(data2.get()));
+    std::swap(data, data2);
 
-    u64 hash_val = XXH64(data.get(), data->byte_size(), 0);
+    u64 hash_val = XXH64(data.get(), Training_data::bytes_total(data->hyp), 0);
     jout << "Writing to file " << data_file << ", Checksum (xxHash64): " << nice_hex(hash_val) << endl;
-    save_bytes(data_file, *data);
+    save_bytes(data_file, *data, hyp.bytes_total());
 }
 
+void network_train(jup_str data_file) {
+    using namespace tensorflow;
+    using namespace tensorflow::ops;
 
+    auto hyp = global_options.hyp;
+
+    jout << "Hyperparameters:\n"
+         << "  batch_count:         " << hyp.batch_count << "\n"
+         << "  batch_size:          " << hyp.batch_size << "\n"
+         << "  batch_nodes:         " << hyp.batch_nodes << "\n"
+         << "  gen_graph_nodes:     " << hyp.gen_graph_nodes << "\n"
+         << "  learning_rate:       " << hyp.learning_rate << '\n'
+         << "  a1_size:             " << hyp.a1_size << '\n'
+         << "  a2_size:             " << hyp.a2_size << '\n';
+    
+    jout << "Initializing..." << endl;
+    jout << "  Loading training data..." << endl;
+    
+    Hyperparam hyp_td;
+    load_bytes(data_file, &hyp_td, -1);
+    auto data_orig = Training_data::make_unique(hyp_td);
+    load_bytes(data_file, data_orig.get(), Training_data::bytes_extra(hyp_td));
+    
+    auto data     = Training_data::make_unique(hyp);
+    auto data_tmp = Training_data::make_unique(hyp);
+    data->hyp     = hyp;
+    data_tmp->hyp = hyp;
+
+    jout << "  Shuffling... "; jout.flush();
+    network_shuffle(*data_orig, data.get());
+    data_orig.release();
+
+    jout << "  Creating neural network..." << endl;
+    auto state = network_init(hyp);
+
+    if (global_options.param_in) {
+        jout << "  Restoring from checkpoint... (" << global_options.param_in << ")" << endl;
+        network_restore(state);
+    }
+
+    jout << "Training..." << endl;
+    //int initial_step = state->step;
+    int cur_batch = 0;
+    while (state->step < global_options.iter_max) {
+        network_batch(state, data->batch(cur_batch));
+        ++cur_batch;
+        
+        if (cur_batch >= data->hyp.batch_count) {
+            jout << "  Re-shuffling training data... "; jout.flush();
+            network_shuffle(*data, data_tmp.get());
+            std::swap(data, data_tmp);
+            cur_batch = 0;
+        }
+    }
+
+    network_free(state);
+}
+
+void network_print_data_info(jup_str data_file) {
+    jout << "Loading file " << data_file << "..." << endl;
+    
+    Hyperparam hyp;
+    load_bytes(data_file, &hyp, -1);
+
+    u64 size = get_file_size(data_file);
+    int size_td = Training_data::bytes_total(hyp);
+    if ((u64)size_td != size) {
+        die("Invalid file size. Expected %d bytes, got %" PRId64 ".", size_td, size);
+    }
+    
+    auto data = Training_data::make_unique(hyp);
+    load_bytes(data_file, data.get(), Training_data::bytes_extra(hyp));
+
+    u64 hash_val_oi = hash_order_independent(data.get());
+    u64 hash_val = XXH64(data.get(), Training_data::bytes_total(data->hyp), 0);
+    
+    jout << "\nData:\n";
+    jout << "  batch_count:         " << hyp.batch_count << "\n"
+         << "  batch_size:          " << hyp.batch_size << "\n"
+         << "  batch_nodes:         " << hyp.batch_nodes << "\n"
+         << "  gen_graph_nodes:     " << hyp.gen_graph_nodes << "\n";
+
+    jout << "\nStatistics:\n";
+    jout << "  total floats:        " << hyp.floats_total() << "\n"
+         << "  total bytes:         " << nice_bytes(size_td) << "\n"
+         << "  checksum (xxHash64): " << nice_hex(hash_val) << '\n'
+         << "  checksum (o.i.):     " << nice_hex(hash_val_oi) << '\n';
+}
 
 /*static void network_run_op(Network_state* state, jup_str name) {
     using namespace tensorflow;
@@ -807,3 +775,95 @@ void network_prepare_data(jup_str graph_file, jup_str data_file, Hyperparam hyp)
     */
 
 } /* end of namespace jup */
+
+#if 0
+    GraphDef graph_def;
+    TF_CHECK_OK( state->root.ToGraphDef(&graph_def) );
+    Session* session;
+    SessionOptions options;
+    TF_CHECK_OK( NewSession(options, &session) );
+    TF_CHECK_OK( session->Create(graph_def) );
+
+    Tensor data_rate {DT_FLOAT, {}};
+    data_rate.scalar<float>()() = 0.01f;
+    TF_CHECK_OK(session->Run(
+        {},
+        {},
+        {"init/run"},
+        &outputs
+    ));
+    std::vector<std::string> node_names;
+    for (int i = 0; i < graph_def.node_size(); ++i) {
+        OpDef const* op_def;
+        TF_CHECK_OK( OpRegistry::Global()->LookUpOpDef(graph_def.node(i).op(), &op_def) );
+        if (op_def->name() == "Placeholder") continue;
+        int output_size = op_def->output_arg_size();
+        for (int j = 0; j < output_size; ++j) {
+            node_names.push_back(graph_def.node(i).name() + jup_printf(":%d", j).c_str());
+        }
+    }
+    jdbg >= node_names ,0;
+    
+    outputs.clear();
+    TF_CHECK_OK(session->Run(
+        {{"x", data_x}, {"y", data_y}, {"rate", data_rate}},
+        node_names,
+        {},
+        &outputs
+    ));
+
+    node_names.push_back("x");
+    node_names.push_back("y");
+    outputs.push_back(data_x);
+    outputs.push_back(data_y);
+    size_t id3 = 0;
+    size_t mat_mul3 = 0;
+    for (std::size_t i = 0; i < outputs.size(); ++i) {
+        if (outputs[i].dtype() != DT_FLOAT) continue;
+        if (node_names[i] == "grad/Identity_2:0") id3 = i;
+        if (node_names[i] == "grad/MatMul_3:0") mat_mul3 = i;
+        jdbg < node_names[i] < outputs[i].flat<float>().size() >= Array_view<float> {outputs[i].flat<float>().data(),
+                std::min((int)outputs[i].flat<float>().size(), 100)} ,0;
+    }
+
+    
+    {auto mat = data_x.matrix<float>();
+        /*for (int i = 0; i < mat.dimension(0); ++i) {
+        jdbg >= Array_view<float> {mat.data() + i*mat.dimension(1), (int)mat.dimension(1)} ,0;;
+        }*/
+    for (int i = 0; i < mat.dimension(1); ++i) {
+        for (int j = 0; j < mat.dimension(0); ++j) {
+            jdbg < mat(j, i);
+        }
+        jdbg ,0;
+    }
+    jdbg ,4;}
+
+    {auto mat = outputs[id3].matrix<float>();
+    
+    for (int i = 0; i < mat.dimension(1); ++i) {
+        for (int j = 0; j < mat.dimension(0); ++j) {
+            jdbg < mat(j, i);
+        }
+        jdbg ,0;
+    }
+    /*for (int i = 0; i < mat.dimension(0); ++i) {
+        jdbg >= Array_view<float> {mat.data() + i*mat.dimension(1), (int)mat.dimension(1)} ,0;;
+        }*/
+    jdbg ,4;}
+    {auto mat = outputs[mat_mul3].matrix<float>();
+    
+    for (int i = 0; i < mat.dimension(1); ++i) {
+        for (int j = 0; j < mat.dimension(0); ++j) {
+            jdbg < mat(j, i);
+        }
+        jdbg ,0;
+    }
+    /*for (int i = 0; i < mat.dimension(0); ++i) {
+        jdbg >= Array_view<float> {mat.data() + i*mat.dimension(1), (int)mat.dimension(1)} ,0;;
+        }*/
+    jdbg ,4;}
+
+    std::exit(0);
+#endif
+    

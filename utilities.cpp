@@ -30,6 +30,57 @@ Buffer& tmp_alloc_buffer() {
     return tmp_buffer;
 }
 
+// see header
+jup_str get_error_msg(jup_str code) {
+    if (code == "?errno") {
+        auto err = errno;
+        return jup_printf("%s (errno %d)", std::strerror(err), err);
+    } else if (code == "?jup_errno") {
+        auto err = jup_errno;
+        assert(err < jup_err_messages_size);
+        return jup_printf("%s (jup_errno %d)", jup_err_messages[err], err);
+    } else {
+        return get_error_msg_system(code);
+    }
+}
+
+static void print_trimmed(jup_str msg) {
+    int l = msg.size();
+    while (l and (msg[l-1] == '\n' or msg[l-1] == '\x0d')) --l;
+    int last = 0;
+    for (int i = 0; i <= l; ++i) {
+        if (i == l or msg[i] == '\n' or msg[i] == '\x0d') {
+            if (last < i) {
+                jerr << "Error: ";
+                jerr.write(msg.data() + last, i - last);
+                jerr << '\n';
+            }
+            last = i+1;
+        }
+    }
+}
+
+// see header
+jup_str _print_error_msg(jup_str msg) {
+    int i;
+    for (i = 0; i < msg.size() and msg[i] == '?';) {
+        int start = i++;
+        while (i < msg.size() and (std::isalnum(msg[i]) or msg[i] == '_')) ++i;
+        jup_str code = {msg.data() + start, i - start};
+        print_trimmed(get_error_msg(code));
+        while (i < msg.size() and std::isspace(msg[i])) ++i;
+    }
+    if (i == msg.size()) return {};
+    return jup_str{msg.data() + i, msg.size() - i};
+}
+
+// see header
+void die(jup_str msg) {
+    print_trimmed(msg);
+    die();
+}
+
+// see header
 jup_str nice_bytes(u64 bytes) {
     if (bytes < 1000) {
         return jup_printf("%d B", bytes);
@@ -44,6 +95,7 @@ jup_str nice_bytes(u64 bytes) {
     }
 }
 
+// see header
 jup_str nice_time(double s) {
     if (s < 100e-9) {
         return jup_printf("%.0fns", s * 1e9);
@@ -65,6 +117,7 @@ jup_str nice_time(double s) {
     }
 }
 
+// see header
 jup_str nice_oct(Buffer_view data, bool swap)  {
     char* tmp = (char*)tmp_alloc((data.size() * 8 + 2) / 3 + 1);
 
@@ -105,6 +158,7 @@ jup_str nice_oct(Buffer_view data, bool swap)  {
     return {tmp, i};
 }
 
+// see header
 jup_str nice_hex(Buffer_view data, bool swap) {
     char* tmp = (char*)tmp_alloc(data.size() * 2 + 1);
 
@@ -126,6 +180,7 @@ jup_str nice_hex(Buffer_view data, bool swap) {
     return {tmp, data.size() * 2};
 }
 
+// see header
 void print_wrapped(std::ostream& out, jup_str str) {
     int width = get_terminal_width();
 
@@ -184,7 +239,6 @@ private:
 static Dummy_ostream jnull_stream;
 std::ostream& jnull = jnull_stream;
 
-
 jup_str jup_err_messages[] = {
     /* 0 */ nullptr,
     /* 1 */ "String is empty",
@@ -195,7 +249,11 @@ jup_str jup_err_messages[] = {
     /* 6 */ "Value too close to zero"
     /* 7 */ "Extra characters"
     /* 8 */ "Expected an integer"
+    /* KEEP THE SIZE UPDATED! */
 };
+const int jup_err_messages_size = 9;
+
+int jup_errno;
 
 struct Number_sci {
     enum Type: u8 {
@@ -457,21 +515,25 @@ u16 jup_stox_helper_int(jup_str str, T* into, u8 flags) {
     
     Number_sci n;
     if (auto code = jup_sto_helper(str, &n, flags | jup_sto::_ONLY_INTEGER)) {
-        return code;
+        jup_errno = code;
+        return jup_errno;
     }
 
     assert(n.e == 0); // due to the _ONLY_INTEGER flag
     assert(n.type == Number_sci::NORMAL);
 
     if (std::is_unsigned<T>::value and n.sign and n.m) {
-        return 3;
+        jup_errno = 3;
+        return jup_errno;
     }
     if (n.m > (u64)std::numeric_limits<T>::max() + n.sign) {
-        return n.sign ? 3 : 4;
+        jup_errno = n.sign ? 3 : 4;
+        return jup_errno;
     }
 
     *into = n.sign ? (T)-n.m : (T)n.m;
-    return 0;
+    jup_errno = 0;
+    return jup_errno;
 }
 
 u16 jup_stox(jup_str str, u8*  into, u8 flags) { return jup_stox_helper_int(str, into, flags); }
@@ -489,7 +551,8 @@ u16 jup_stox(jup_str str, float* into, u8 flags) {
 
     Number_sci n;
     if (auto code = jup_sto_helper(str, &n, flags | jup_sto::_MAX_LEFT)) {
-        return code;
+        jup_errno = code;
+        return jup_errno;
     }
     
     // We interpret n.m as a real in [0, 2)
@@ -572,14 +635,16 @@ u16 jup_stox(jup_str str, float* into, u8 flags) {
             d |= m_;
             // exponent already 0
         } else {
-            return n.e < 0 ? 6 : (n.sign ? 3 : 4);
+            jup_errno = n.e < 0 ? 6 : (n.sign ? 3 : 4);
+            return jup_errno;
         }
     } else {
         assert(false);
     }
 
     *into = result;
-    return 0;
+    jup_errno = 0;
+    return jup_errno;
 }
 
 u16 jup_stox(jup_str str, double* into, u8 flags) {
@@ -588,7 +653,8 @@ u16 jup_stox(jup_str str, double* into, u8 flags) {
 
     Number_sci n;
     if (auto code = jup_sto_helper(str, &n, flags | jup_sto::_MAX_LEFT)) {
-        return code;
+        jup_errno = code;
+        return jup_errno;
     }
     
     // We interpret n.m as a real in [0, 2)
@@ -671,14 +737,16 @@ u16 jup_stox(jup_str str, double* into, u8 flags) {
             d |= m_;
             // exponent already 0
         } else {
-            return n.e < 0 ? 6 : (n.sign ? 3 : 4);
+            jup_errno = n.e < 0 ? 6 : (n.sign ? 3 : 4);
+            return jup_errno;
         }
     } else {
         assert(false);
     }
 
     *into = result;
-    return 0;
+    jup_errno = 0;
+    return jup_errno;
 }
 
 // from https://en.wikipedia.org/wiki/Xorshift
@@ -741,9 +809,89 @@ double Rng::gen_any_double() {
 
 Rng global_rng;
 
+void load_bytes_object(jup_str path, char* into, int obj_size, int extra_bytes) {
+    assert((s64)obj_size + (s64)extra_bytes <= (s64)std::numeric_limits<int>::max());
+    assert(extra_bytes >= -1);
+    
+    std::ifstream i;
+    i.open(path.c_str(), std::ios::ate | std::ios::binary);
+    if (not i.good()) {
+        die("?errno while trying to open file %s", path);
+    }
+
+    auto pos = i.tellg();
+    if (pos == -1l) {
+        die("?errno while trying to open file %s", path);
+    }
+    if (extra_bytes == -1) {
+        if (pos < obj_size) {
+            die("not enough bytes for specified type (got %" PRId64 ", need at least %d)\nwhile trying to "
+            "open file %s", (u64)pos, obj_size, path);
+        }
+    } else {
+        if (pos != obj_size + extra_bytes) {
+            die("not enough bytes for specified type (got %" PRId64 ", need exactly %d)\nwhile trying to "
+                "open file %s", (u64)pos, obj_size + extra_bytes, path.c_str());
+        }
+    }
+    i.seekg(0, std::ios::beg);
+    if (not i.good()) {
+        die("?errno while trying to open file %s", path);
+    }
+    i.read(into, obj_size + std::max(extra_bytes, 0));
+    if (not i.good()) {
+        die("?errno while trying to open file %s", path);
+    }
+}
+
+void load_bytes_buffer(jup_str path, Buffer* into, int maxsize) {
+    assert(maxsize >= -1);
+    
+    std::ifstream i;
+    i.open(path.c_str(), std::ios::ate | std::ios::binary);
+    if (not i.good()) {
+        die("?errno while trying to open file %s", path);
+    }
+
+    auto pos = i.tellg();
+    if (pos == -1l) {
+        die("?errno while trying to tellg in file %s", path);
+    }
+    if (maxsize != -1 and pos > maxsize) {
+        die("too many bytes (got %d, need at most %d)\nwhile trying to read file %s\n",
+            pos, maxsize, path);
+    }
+    i.seekg(0, std::ios::beg);
+    if (not i.good()) {
+        die("?errno while trying to seekg in file %s", path);
+    }
+    into->reserve_space(pos);
+    i.read(into->end(), pos);
+    if (not i.good()) {
+        die("?errno while trying to read file %s", path);
+    }
+}
+
+u64 get_file_size(jup_str path) {
+    auto f = std::fopen(path.c_str(), "rb");
+    if (not f) {
+        die("?errno while trying to open file %s", path);
+    }
+    if (std::fseek(f, 0, SEEK_END) != 0) {
+        die("?errno while trying to seek in file %s", path);
+    }
+    auto end = std::ftell(f);
+    if (end == -1L) {
+        die("?errno while trying to tell in file %s", path);
+    }
+    std::fclose(f);
+    return end;
+}
+
 Timer::Timer(u64 progress_target_):
     progress_target{progress_target_},
     last_bytes{0},
+    last_counter{0},
     cur_duration{0}
 {
     start_time = elapsed_time();
@@ -769,6 +917,21 @@ jup_str Timer::bytes(u64 have) {
     u64 diff = have - last_bytes;
     last_bytes = have;
     return jup_printf("%s/s", nice_bytes((u64)(diff / cur_duration)));
+}
+
+jup_str Timer::counter(u64 have) {
+    u64 diff = have - last_counter;
+    last_counter = have;
+    float f = (float)diff / (float)cur_duration;
+    if (f < 10.f) {
+        return jup_printf("%.2f", f);
+    } else {
+        return jup_printf("%.0f", f);
+    }
+}
+
+jup_str Timer::bytes_done(u64 total) {
+    return jup_printf("%s/s", nice_bytes((u64)(total / (elapsed_time() - start_time))));
 }
 
 jup_str Timer::total() {
@@ -836,9 +999,9 @@ void Histogram::print(int max_width, int max_height) const {
     int height = max_height - 3;
     assert(width > 0 and height > 0);
     if (n < b+1) {
-        jerr << "Error: " << "Tried to print a histogram without enough data (got " << n
+        jerr << "Info: " << "Tried to print a histogram without enough data (got " << n
              << ", need " << b+1 << "\n";
-        die();
+        return;
     }
 
     float x0 = q_[0];
@@ -868,13 +1031,54 @@ void Histogram::print(int max_width, int max_height) const {
     for (int i = height - 1; i >= 0; --i) {
         jout << "  ";
         for (int j = 0; j < width; ++j) {
-            int y = (int)std::round(vals[j] / val_max * height);
-            jout.put(y > i ? '#' : ' ');
+            //int y = (int)std::round(vals[j] / val_max * height);
+            float frac = vals[j] / val_max * height - i;
+            if (is_enabled_utf8()) {
+                if (frac >= 0.9375f) {
+                    jout << u8"\u2588";
+                } else if (frac >= 0.8125f) {
+                    jout << u8"\u2587";
+                } else if (frac >= 0.6875f) {
+                    jout << u8"\u2586";
+                } else if (frac >= 0.5625f) {
+                    jout << u8"\u2585";
+                } else if (frac >= 0.4375f) {
+                    jout << u8"\u2584";
+                } else if (frac >= 0.3125f) {
+                    jout << u8"\u2583";
+                } else if (frac >= 0.1875f) {
+                    jout << u8"\u2582";
+                } else if (frac >= 0.0625f) {
+                    jout << u8"\u2581";
+                } else {
+                    jout.put(' ');
+                }
+            } else {
+                if (frac >= 0.8f) {
+                    jout.put('#');
+                } else if (frac >= 0.65f) {
+                    jout.put('m');
+                } else if (frac >= 0.57f) {
+                    jout.put('=');
+                } else if (frac >= 0.50f) {
+                    jout.put('~');
+                } else if (frac >= 0.07f) {
+                    jout.put('_');
+                } else {
+                    jout.put(' ');
+                }
+            }
         }
         jout << "  \n";
     }
     jout << "  ";
-    for (int i = 0; i < width; ++i) jout.put('-');
+    for (int i = 0; i < width; ++i) {
+        if (is_enabled_utf8()) {
+            jout << u8"\u203e";
+        } else {
+            jout.put('-');
+        }
+    }
     jout.put('\n');
     auto str1 = jup_printf("%.2le", (double)x0);
     auto str2 = jup_printf("%.2le", (double)x1);
@@ -883,6 +1087,33 @@ void Histogram::print(int max_width, int max_height) const {
     jout << str2;
     jout << endl;
 }
+
+void Histogram::print_quant() const {
+    constexpr int per_line = 10;
+    auto fmt1 = "%9.2le  ";
+    auto fmt2 = "    *%d    |";
+    auto fmt3 = "%2d* |";
+    auto fmt4 = "    |";
+
+    jout << "Quantiles (n = " << n << ", b = " << b << "):" << endl;
+    
+    // Header
+    jout << fmt4;
+    for (int i = 0; i < per_line; ++i) {
+        jout << jup_printf(fmt2, i);
+    }
+    jout << "\n";
+
+    for (int i = 0; i <= b; i += per_line) {
+        jout << jup_printf(fmt3, i / per_line);
+        for (int j = 0; j < per_line and i+j <= b; ++j) {
+            jout << jup_printf(fmt1, q_[i + j]);
+        }
+        jout << "\n";
+    }
+    jout.flush();
+}
+
 
 /*
 void histogram_test() {

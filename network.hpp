@@ -1,5 +1,5 @@
 #pragma once
-
+ 
 #include "flat_data.hpp"
 #include "utilities.hpp"
 
@@ -18,6 +18,9 @@ struct Hyperparam {
     int gen_graph_nodes = JUP_DEFAULT_GEN_GRAPH_NODES; // nodes needed per instance
 
     float learning_rate = JUP_DEFAULT_LEARNING_RATE; // you should know what that means...
+
+    int a1_size = 64; // size of the output of the first layer
+    int a2_size =  1; // size of the output of the second layer (has to be 1, if it is the last layer)
 
     int num_instances() const {
         return batch_count * batch_size;
@@ -46,7 +49,10 @@ struct Hyperparam {
     bool valid() const {
         return batch_count > 0 and batch_size > 0 and batch_nodes > 0;
     }
-};
+    int batch_edges() const {
+        return batch_nodes * batch_nodes;
+    }
+} __attribute__((__packed__));
 
 inline std::ostream& operator<< (std::ostream& out, Hyperparam hyp) {
     out << "batch_count: " << hyp.batch_count << ", batch_size: " << hyp.batch_size
@@ -60,7 +66,7 @@ struct Batch_data {
 };
 
 struct Training_data {
-    Hyperparam hyp;
+    Hyperparam hyp; // This must be in front!
     Flat_array64_const<float> batch_data;
 
     static Unique_ptr_free<Training_data> make_unique(Hyperparam hyp);
@@ -68,18 +74,23 @@ struct Training_data {
     Batch_data batch(int index);
     Batch_data instance(int index);
     
-    int byte_size() const {
-        return sizeof(Training_data) + hyp.bytes_total();
+    static int bytes_extra(Hyperparam hyp) {
+        return hyp.bytes_total();
     }
-};
+    static int bytes_total(Hyperparam hyp) {
+        return sizeof(Training_data) + bytes_extra(hyp);
+    }
+} __attribute__((__packed__));
 
 struct Network_state;
 
-Network_state* network_init();
+Network_state* network_init(Hyperparam hyp);
 void network_free(Network_state* state);
 void network_main();
 
 void network_prepare_data(jup_str graph_file, jup_str data_file, Hyperparam hyp);
-//void network_shuffle_data(jup_str from_file, jup_str into_file, Hyperparam into_hyp);
+void network_train(jup_str data_file);
+void network_print_data_info(jup_str data_file);
+
 
 } /* end of namespace jup */

@@ -1,4 +1,6 @@
 
+#include "utilities.hpp"
+
 namespace jup {
 
 std::ostream& jout = std::cout;
@@ -11,23 +13,9 @@ void _assert_fail(char const* expr_str, char const* file, int line) {
 }
 
 void _assert_errno_fail(char const* expr_str, char const* file, int line) {
-    auto err = errno;
-    char const* msg = std::strerror(err);
-    err_msg(msg, err);
-    _assert_fail(expr_str, file, line);
-}
-
-void err_msg(char const* msg, int err) {
-    int l = std::strlen(msg);
-    while (l and (msg[l-1] == '\n' or msg[l-1] == '\x0d')) --l;
-    jerr << "Error: ";
-    jerr.write(msg, l);
-    jerr << " (" << err << ")\n";
-}
-
-void die(char const* msg, int err) {
-    err_msg(msg, err);
-    die();
+    jerr << "\nError: Assertion failed. File: " << file << ", Line " << line
+         << "\n\nExpression: " << expr_str << "\n";
+    die("?errno");
 }
 
 extern "C" void handle_signal(int sig) {

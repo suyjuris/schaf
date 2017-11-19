@@ -117,12 +117,33 @@ void die() {
 
 int get_terminal_width() {
     struct winsize size;
-    ioctl(STDOUT_FILENO, TIOCGWINSZ, &size);
-    int width = size.ws_col;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &size) == 0) {
+        int width = size.ws_col;
+        if (width > 1) {
+            return width;
+        }
+    }
+    
+    // The above does not always work, make 80 minimum as a workaround
+    return 80;
+}
 
-    // This does not always work, make 80 minimum as a workaround
-    if (width <= 1) width = 80;
-    return width;
+static bool utf8_working = false;
+
+void init_utf8() {
+    if (std::setlocale(LC_ALL, "C.UTF-8") == nullptr) {
+        utf8_working = false;
+    } else {
+        utf8_working = true;
+    }
+}
+
+bool is_enabled_utf8() {
+    return utf8_working;
+}
+
+jup_str get_error_msg_system(jup_str code) {
+    die("Error codes of type %s are not supported on linux (and maybe not on other platforms, either).", code);
 }
 
 } /* end of namespace jup */

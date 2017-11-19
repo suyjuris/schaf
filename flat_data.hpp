@@ -363,7 +363,7 @@ struct Flat_array_const {
     static_assert(offset >= sizeof(Size_t));
 
     Size_t m_size;
-		
+
 	explicit Flat_array_const(int size_ = 0): m_size{size_} {}
 	explicit Flat_array_const(Buffer* containing) { init(containing); }
     
@@ -440,8 +440,14 @@ struct Flat_array_const {
 	}
 
     operator bool() const { return m_size; }
-};
+} __attribute__((__packed__));
 
+
+template <typename T>
+using Flat_array32 = Flat_array<T, u32, u32>;
+
+template <typename T, int offset = sizeof(u32)>
+using Flat_array32_const = Flat_array_const<T, u32, offset>;
 
 template <typename T>
 using Flat_array64 = Flat_array<T, u64, u64>;

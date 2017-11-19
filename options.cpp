@@ -65,6 +65,26 @@ static int get_int(
     }
 }
 
+static float get_float(
+    Parse_state* state,
+    float lower = -std::numeric_limits<float>::infinity(),
+    float upper =  std::numeric_limits<float>::infinity()
+) {
+    assert(state);
+
+    float value;
+    auto code = jup_stox(state->current, &value);
+    if (code) {
+        parse_die(state, jup_err_messages[code]);
+    } else if (value < lower) {
+        parse_die(state, jup_printf("The value is too small, must be at least %f", lower));
+    } else if (value > upper) {
+        parse_die(state, jup_printf("The value is too big, must be at most %f", upper));
+    } else {
+        return value;
+    }    
+}
+
 static void print_usage() {
     Buffer str;
     str.append(
@@ -85,6 +105,13 @@ static void print_usage() {
         "  prepare_data <input> <output>\n"
         "    Generates training data for the neural network by reading the graphs in <input> and "
             "writes it into <output>.\n"
+        "\n"
+        "  train <input>\n"
+        "    Read the training data contained in the file <input> and train the network.\n"
+        "\n"
+        "  print_data_info <input>\n"
+        "    Reads the training data from the file <input> and prints information about it to the "
+            "console.\n"
         "\n"
         "Options:\n"
         "  --edges-min,-e <val>  [default: none]\n"
@@ -115,7 +142,7 @@ static void print_usage() {
             "learning rate.\n"
         "\n"
         "  --param-out,-o <path> [default: none]\n"
-        "    The parameter file to save. The parameter of the network will be saved to this "
+        "    The parameter file to save. The parameters of the network will be saved to this "
             "location.\n"
         "\n"
         "  --iter-max <value> [default: none]\n"
@@ -166,6 +193,21 @@ static bool parse_option(Schaf_options* options, Parse_state* state) {
     } else if (state->current == "--gen-graph-nodes") {
         pop_option_arg(state);
         options->hyp.gen_graph_nodes = get_int(state, 1);
+    } else if (state->current == "--learning-rate") {
+        pop_option_arg(state);
+        options->hyp.learning_rate = get_float(state, 0.f);
+    } else if (state->current == "--param-in") {
+        pop_option_arg(state);
+        options->param_in = state->current;
+    } else if (state->current == "--param-out") {
+        pop_option_arg(state);
+        options->param_out = state->current;
+    } else if (state->current == "--iter-max") {
+        pop_option_arg(state);
+        options->iter_max = get_int(state, 0);
+    } else if (state->current == "--iter-save") {
+        pop_option_arg(state);
+        options->iter_save = get_int(state, 1);
     } else if (state->current == "--") {
         if (not pop(state)) {
             parse_die(state, "Unexpected end of input, expected a mode.");
@@ -222,9 +264,21 @@ void options_execute(Schaf_options* options, Array_view<jup_str> args) {
         }
         jup_str output = state.current;
         network_prepare_data(input, output, options->hyp);
+    } else if (state.current == "train") {
+        if (not pop(&state)) {
+            parse_die(&state, "Expected the <input> argument to mode train.");
+        }
+        jup_str input = state.current;
+        network_train(input);
+    } else if (state.current == "print_data_info") {
+        if (not pop(&state)) {
+            parse_die(&state, "Expected the <input> argument to mode print_data_info.");
+        }
+        jup_str input = state.current;
+        network_print_data_info(input);
     } else {
         auto s = jup_printf(
-            "Unknown mode. Expected write_graph, print_stats or prepare_data, got %s",
+            "Unknown mode. Expected write_graph, print_stats, prepare_data, train or print_data_info, got %s",
             state.current
         );
         parse_die(&state, s);

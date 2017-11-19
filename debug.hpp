@@ -199,7 +199,7 @@ inline Debug_ostream& operator> (Debug_ostream& out, jup_str s) {
     return out;
 }
 inline Debug_ostream& operator< (Debug_ostream& out, double d) {
-	return out.printf("%.4e ", d);
+	return out.printf("%.2e ", d);
 }
 inline Debug_ostream& operator< (Debug_ostream& out, float f) {
     return out < (double)f;

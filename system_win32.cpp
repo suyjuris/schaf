@@ -9,21 +9,6 @@
 
 namespace jup {
 
-void win_last_errmsg() {
-    auto err = GetLastError();
-    char* msg = nullptr;
-    FormatMessage(
-        FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
-        nullptr,
-        err,
-        MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-        (LPTSTR)&msg,
-        0,
-        nullptr
-    );
-    err_msg(msg, err);
-}
-
 class MyStackWalker : public StackWalker {
     using StackWalker::StackWalker;
 protected:
@@ -83,8 +68,9 @@ void die() {
 }
 
 void _assert_win_fail(c_str expr_str, c_str file, int line) {
-    win_last_errmsg();
-    _assert_fail(expr_str, file, line);
+    jerr << "\nError: Assertion failed. File: " << file << ", Line " << line
+         << "\n\nExpression: " << expr_str << "\n";
+    die("?win");
 }
 
 int get_terminal_width() {
@@ -96,6 +82,27 @@ int get_terminal_width() {
     if (width <= 1) width = 80;
     return width;
 }
+
+jup_str get_error_msg_system(jup_str code) {
+    if (code == "?win") {
+        auto err = GetLastError();
+        char* msg = nullptr;
+        FormatMessage(
+            FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM,
+            nullptr,
+            err,
+            MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+            (LPTSTR)&msg,
+            0,
+            nullptr
+        );
+        return jup_printf("%s (win %d)", msg, err);
+    } else {
+        die("Error codes of type %s are not supported on windows (and maybe not on other platforms, "
+            "either).", code);
+    }
+}
+
 
 } /* end of namespace jup */
 

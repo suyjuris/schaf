@@ -31,6 +31,7 @@ libwinpthread-1.dll
 graph_data/
 tf_data/
 schaf
+schaf_fast
 README.html
 include_win/
 profdata/

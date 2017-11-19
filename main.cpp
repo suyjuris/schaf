@@ -10,7 +10,8 @@ using namespace jup;
 int main(int argc, char const* const* argv) {
     init_signals();
     init_elapsed_time();
-    
+    init_utf8();
+
     Array<jup_str> argv_arr;
     for (int i = 1; i < argc; ++i) {
         argv_arr.push_back(argv[i]);

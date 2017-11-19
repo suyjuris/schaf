@@ -860,10 +860,17 @@ void graph_print_stats(jup_str input, jup_str output) {
             arr[i] = g.edge_data[i].weight;
         }
         // Each weight is in there twice, but that is irrelevant
+        Histogram histogram {100};
+        for (u32 i = 0; i < g.edge_data.size(); ++i) {
+            if (arr[i] > 2)
+                histogram.add(arr[i]);
+        }
         auto metric = metrics_calculate({arr, (int)g.edge_data.size()});
         jout << "Weights: ";
         metrics_print(jout, *out, metric);
-        *out << endl;}
+        *out << endl;
+        histogram.print();
+        histogram.print_quant();}
 
         jout << jup_printf("Done. (%.2fs)\n", elapsed_time() - beg_t) << endl;
         
@@ -926,7 +933,8 @@ bool graph_reader_next(Graph_reader_state* state) {
 
 void graph_reader_reset(Graph_reader_state* state) {
     assert(not state->input.bad());
-    state->input.seekg(0);
+    state->input.clear();
+    assert(state->input.seekg(4).good());
     state->data.reset();
     state->graph = nullptr;
 }

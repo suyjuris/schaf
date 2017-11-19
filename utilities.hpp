@@ -32,10 +32,12 @@ inline char const* string_unpacker(jup_str obj) { return obj.c_str(); }
 
 /**
  * Like sprintf, but uses tmp_alloc for memory. Additionally, it is allowed to pass null-terminated
- * jup_str, they will be converted into const char* before calling printf.
+ * jup_str, they will be converted into const char* before calling printf. Guaranteed to not modify
+ * errno.
  */
 template <typename... Args>
 jup_str jup_printf(jup_str fmt, Args const&... args) {
+    auto tmp_errno = errno;
     errno = 0;
     int size = std::snprintf(nullptr, 0, fmt.c_str(), string_unpacker(args)...);
     assert_errno(errno == 0);
@@ -46,6 +48,8 @@ jup_str jup_printf(jup_str fmt, Args const&... args) {
     std::snprintf(tmp, size + 1, fmt.c_str(), string_unpacker(args)...);
     assert_errno(errno == 0);
 
+    errno = tmp_errno;
+    
     return {tmp, size};
 }
 
@@ -80,6 +84,34 @@ void jup_memmove(T1* into, T2 const& from) {
     int from_size = (char const*)from->end() - (char const*)from->begin();
     assert(into_size == from_size);
     std::memmove(into->begin(), from->begin(), into_size);
+}
+
+/**
+ * code is one of ?errno, ?jup_errno or ?win (the latter is only supported on the windows platform). The result
+ * will be a nicely formatted error message corresponding to the current value of this error code.
+ */
+jup_str get_error_msg(jup_str code);
+jup_str _print_error_msg(jup_str msg);
+
+/**
+ * Prints msg onto the console as an error message and terminates the program.
+ */
+[[noreturn]] void die(jup_str msg);
+
+/**
+ * First, any leading error code specifiers are evaluated (see get_error_msg) and printed to the
+ * console. Then, the remaining string is passed to jup_printf together with the rest of the
+ * arguments, and then printed to the console as an error message. Then the program terminates.
+ * Example:
+ *     die("?errno while opening file %s", file_name)
+ * would print
+ *     Error: <errno error message>
+ *     Error: while opening file <file_name>
+ */
+template <typename... Args>
+[[noreturn]] void die(jup_str fmt, Args&&... args) {
+    fmt = _print_error_msg(fmt);
+    die(jup_printf(fmt, std::forward<Args>(args)...));
 }
 
 /**
@@ -149,6 +181,12 @@ extern std::ostream& jnull;
  * Strings for error messages.
  */
 extern jup_str jup_err_messages[];
+extern const int jup_err_messages_size;
+
+/**
+ * The last returned error code.
+ */
+extern int jup_errno;
 
 /**
  * Flags for jup_stox. See jup_stox for documentation.
@@ -275,31 +313,32 @@ template <> inline double Rng::gen_any() { return gen_any_double(); }
 extern Rng global_rng;
 
 /**
- * Write the bytes of object obj into the file at path.
+ * Write the bytes of object obj and extra_bytes additional bytes into the file at path.
  */
 template <typename T>
-void save_bytes(jup_str path, T const& obj) {
+void save_bytes(jup_str path, T const& obj, int extra_bytes = 0) {
+    assert(extra_bytes >= 0);
     std::ofstream o;
     o.open(path.c_str(), std::ios::out | std::ios::binary);
     assert_errno(o.good());
-    o.write((char const*)&obj, sizeof(obj));
+    o.write((char const*)&obj, sizeof(obj) + extra_bytes);
     assert_errno(o.good());
 }
 
+void load_bytes_object(jup_str path, char* into, int obj_size, int extra_bytes);
+void load_bytes_buffer(jup_str path, Buffer* into, int maxsize = -1);
+
 /**
- * Read the bytes from the file at path and treat it as an instance of obj.
+ * Read the bytes from the file at path and treat it as an instance of obj. If extra_bytes is -1,
+ * ignore any trailing bytes. Else, extra_bytes additional bytes will be read and written to the
+ * memory at obj+1 and following. Callers must ensure that there is space!
  */
 template <typename T>
-void load_bytes(jup_str path, T* obj) {
-    std::ifstream i;
-    i.open(path.c_str(), std::ios::ate | std::ios::binary);
-    assert_errno(i.good());
-    assert(i.tellg() == sizeof(T));
-    i.seekg(0, std::ios::beg);
-    i.read((char*)obj, sizeof(T));
-    assert_errno(i.good());
-    assert(i.gcount() == sizeof(T));
+void load_bytes(jup_str path, T* obj, int extra_bytes = 0) {
+    load_bytes_object(path, (char*)obj, sizeof(T), extra_bytes);
 }
+
+u64 get_file_size(jup_str path);
 
 /**
  * Convenience class for providing the user with status updates regarding an ongoing operation.
@@ -331,6 +370,16 @@ struct Timer {
     jup_str bytes(u64 have);
 
     /**
+     * Returns the rate of progress in terms of counter per second
+     */
+    jup_str counter(u64 have);
+    
+    /**
+     * Like bytes, but calculates the rate since starting the timer.
+     */
+    jup_str bytes_done(u64 total);
+
+    /**
      * Returns the total amount of time for the operation. Call this after the operation is
      * finished.
      */
@@ -338,6 +387,7 @@ struct Timer {
 
     u64 progress_target;
     u64 last_bytes;
+    u64 last_counter;
     double start_time;
     double next_update;
     double cur_duration;
@@ -357,7 +407,7 @@ struct Histogram {
      * Initialized the Histogram. size is the number of categories to determine the positions
      * of. These categories are b-quantiles for equidistant values of b.
      */
-    Histogram(int size);
+    Histogram(int size = 100);
 
     /**
      * Call this for every point in your sample.
@@ -365,9 +415,12 @@ struct Histogram {
     void add(float x);
 
     /**
-     * Print a nicely-formatted histogram into jout.
+     * Print a nicely-formatted histogram into jout. If the Histogram does not have enough data
+     * points to be initialised, this operation failes with an informational message.
      */
     void print(int width = -1, int height = -1) const;
+    
+    void print_quant() const;
 
     Unique_ptr_void _data;
     Array_view_mut<float> q_;
@@ -376,7 +429,7 @@ struct Histogram {
 };
 
 /**
- * Boilerplate code for iterating over f(x), with user-defined f.
+ * Boilerplate code for iterating over f(x), with user-defined f and x in some range.
  */
 template <typename Partial_viewer>
 struct Partial_view_iterator {
