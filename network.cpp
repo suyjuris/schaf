@@ -135,7 +135,7 @@ Network_state* network_init(Hyperparam hyp) {
     auto update = root.NewSubScope("update");
     std::vector<Operation> update_ops;
     for (size_t i = 0; i < grad_vars.size(); ++i) {
-        Output output = ApplyGradientDescent(update, grad_vars[i], Mul(root, rate, batch_size_inv), grad_outputs[i]);
+        Output output = ApplyGradientDescent(update, grad_vars[i], rate, grad_outputs[i]);
         //Output output = ApplyGradientDescent(update, grad_vars[i], rate,
         //    Print(update, grad_outputs[i], OutputList{Const<int>(update, (int)i), grad_outputs[i]}, Print::Summarize(20)));
         update_ops.push_back(output.op());
@@ -171,8 +171,9 @@ Network_state* network_init(Hyperparam hyp) {
     auto init_op = NoOp(init.WithControlDependencies(init_ops).WithOpName("run"));
 
     // Learning rate decay
-    auto decay = root.NewSubScope("decay");
-    state->decay_op = Output {Assign(decay, rate, Mul(decay, rate, 0.5f))}.op();
+    //auto decay = root.NewSubScope("decay");
+    state->decay_op = NoOp(root);
+    //state->decay_op = Output {Assign(decay, rate, Mul(decay, rate, 0.5f))}.op();
 
     // Checkpoints
     auto checkpoint = root.NewSubScope("checkpoint");
@@ -244,8 +245,8 @@ void network_batch(Network_state* state, Batch_data const& data) {
         and state->epoch_start == state->step
         and state->step > 0
     ) {
-        TF_CHECK_OK(state->session.Run({}, {}, {state->decay_op}, nullptr));
         std::vector<Tensor> outputs;
+        TF_CHECK_OK(state->session.Run({}, {}, {state->decay_op}, nullptr));
         TF_CHECK_OK(state->session.Run({}, {state->rate}, {}, &outputs));
         jout << "  Reducing learning rate, down to " << outputs[0].scalar<float>()() << "\n";
     }
@@ -499,7 +500,7 @@ void network_generate_data(jup_str graph_file, Training_data* data) {
     int const n = data->hyp.batch_nodes;
     int const m = data->hyp.batch_edges();
 
-    Histogram_exact h {100};
+    Histogram h {100};
 
     while (cur_batch < data->hyp.batch_count) {
         Batch_data out = data->batch(cur_batch);
@@ -608,7 +609,7 @@ void network_generate_data(jup_str graph_file, Training_data* data) {
             
             for (float& f: out.edge_weights.subview(cur_instance*m, m)) {
                 f = std::log((f/max - c3)/c2) / c1 * 2.f - 1.f;
-                h.add(f);
+                //h.add(f);
             }
 
             ++cur_instance;

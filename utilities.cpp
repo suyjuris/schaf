@@ -1120,7 +1120,7 @@ void histogram_print_raw_helper(jup_str fname, int b, Array_view<float> q_) {
 void Histogram::print(int max_width, int max_height) const {
     if (n < b+1) {
         jerr << "Info: Tried to print a Histogram without enough data (got " << n
-             << ", need " << b+1 << "\n";
+             << ", need " << b+1 << ")\n";
         return;
     }
     histogram_print_helper(max_width, max_height, b, n, q_);
@@ -1129,7 +1129,7 @@ void Histogram::print(int max_width, int max_height) const {
 void Histogram::print_quant() const {
     if (n < b+1) {
         jerr << "Info: Tried to print a Histogram without enough data (got " << n
-             << ", need " << b+1 << "\n";
+             << ", need " << b+1 << ")\n";
         return;
     }
     histogram_print_quant_helper(b, n, q_);
@@ -1138,7 +1138,7 @@ void Histogram::print_quant() const {
 void Histogram::print_raw(jup_str fname) const {
     if (n < b+1) {
         jerr << "Info: Tried to print a Histogram without enough data (got " << n
-             << ", need " << b+1 << "\n";
+             << ", need " << b+1 << ")\n";
         return;
     }
     histogram_print_raw_helper(fname, b, q_);

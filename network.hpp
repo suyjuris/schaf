@@ -4,6 +4,7 @@
 #include "utilities.hpp"
 
 namespace jup {
+
 #define JUP_DEFAULT_BATCH_COUNT      256
 #define JUP_DEFAULT_BATCH_SIZE        64
 #define JUP_DEFAULT_BATCH_NODES       16
