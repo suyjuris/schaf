@@ -18,6 +18,7 @@ struct Hyperparam {
     int gen_graph_nodes = JUP_DEFAULT_GEN_GRAPH_NODES; // nodes needed per instance
 
     float learning_rate = JUP_DEFAULT_LEARNING_RATE; // you should know what that means...
+    int learning_rate_decay = 0; // number of epochs after which the learning rate is halved.
 
     int a1_size = 64; // size of the output of the first layer
     int a2_size =  1; // size of the output of the second layer (has to be 1, if it is the last layer)

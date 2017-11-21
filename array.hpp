@@ -114,7 +114,7 @@ struct Array_view {
 		m_data{data}, m_size{size} {assert(size >= 0);}
     constexpr Array_view(std::nullptr_t): Array_view{} {}
 	
-	Array_view(Array_view_mut<T>& buf):
+	Array_view(Array_view_mut<T> const& buf):
         m_data{buf.begin()}, m_size{buf.size()} {}
 	
 	Array_view(Array<T> const& buf):

@@ -21,7 +21,7 @@ Debug/*
 .vs/*
 massim/*
 *.cfg
-out
+out*
 doku/*
 .gdbinit
 build_files/

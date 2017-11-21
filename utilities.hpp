@@ -421,11 +421,33 @@ struct Histogram {
     void print(int width = -1, int height = -1) const;
     
     void print_quant() const;
+    void print_raw(jup_str fname) const;
 
     Unique_ptr_void _data;
     Array_view_mut<float> q_;
     Array_view_mut<int> n_;
     int n, b;
+};
+
+/**
+ * Same as Histogram basically, except it doesn't use an approximation but actually stores all
+ * values. Refer to Histogram's documentations.
+ */
+struct Histogram_exact {
+    Histogram_exact(int size = 100);
+    void add(float x);
+    void print(int width = -1, int height = -1);
+    void print_quant();
+    void print_raw(jup_str fname);
+
+    /**
+     * Sorts the data and calculates the quantiles.
+     */
+    void calculate();
+    
+    Array<float> data;
+    Array<float> q;
+    int last_size = 0;
 };
 
 /**

@@ -77,12 +77,14 @@ struct Network_state {
     
     tensorflow::Scope root;
     
-    tensorflow::Operation update_op, save_op, restore_op;
+    tensorflow::Operation update_op, save_op, restore_op, decay_op;
     tensorflow::Output x, y, rate, loss, summary_op, print_op;
     
     std::vector<tensorflow::Output> params;
 
     int step = 0;
+    int epoch = 0;
+    int epoch_start = 0;
 
     Timer timer;
     float loss_sum = 0;
@@ -104,6 +106,7 @@ Network_state* network_init(Hyperparam hyp) {
     state->hyp = hyp;
 
     auto shape_scalar = Const<int>(root, 0, {0});
+    auto batch_size_inv = Const<float>(root, 1.f / (float)hyp.batch_size);
 
     // Network layout
     auto name = [&root](std::string str) { return root.WithOpName(str); };
@@ -122,7 +125,7 @@ Network_state* network_init(Hyperparam hyp) {
     auto a     = Tanh(name("a"),     BiasAdd(root, MatMul(root, x, w1), b1));
     auto y_out = Tanh(name("y_out"), BiasAdd(root, MatMul(root, a, w2), b2));
 
-    auto loss = L2Loss(name("loss"), Sub(root, Reshape(root, y_out, {hyp.batch_size}), y));
+    auto loss = Mul(root, L2Loss(name("loss"), Sub(root, Reshape(root, y_out, {hyp.batch_size}), y)), batch_size_inv);
 
     // Update
     std::vector<Output> grad_vars {w1, b1, w2, b2};
@@ -132,7 +135,7 @@ Network_state* network_init(Hyperparam hyp) {
     auto update = root.NewSubScope("update");
     std::vector<Operation> update_ops;
     for (size_t i = 0; i < grad_vars.size(); ++i) {
-        Output output = ApplyGradientDescent(update, grad_vars[i], rate, grad_outputs[i]);
+        Output output = ApplyGradientDescent(update, grad_vars[i], Mul(root, rate, batch_size_inv), grad_outputs[i]);
         //Output output = ApplyGradientDescent(update, grad_vars[i], rate,
         //    Print(update, grad_outputs[i], OutputList{Const<int>(update, (int)i), grad_outputs[i]}, Print::Summarize(20)));
         update_ops.push_back(output.op());
@@ -141,7 +144,8 @@ Network_state* network_init(Hyperparam hyp) {
 
     // Summaries
     auto summary = root.NewSubScope("summary");
-    Output s_loss = ScalarSummary(root, std::string {"s_loss"}, loss );
+    Output s_loss = ScalarSummary(root, std::string {"s_loss"}, loss);
+    Output s_rate = ScalarSummary(root, std::string {"s_rate"}, rate);
     Output s_y    = HistogramSummary(root, std::string {"s_y"},    y    );
     Output s_yout = HistogramSummary(root, std::string {"s_yout"}, y_out);
     Output s_w1 = HistogramSummary(root, std::string {"s_w1"}, w1);
@@ -149,7 +153,7 @@ Network_state* network_init(Hyperparam hyp) {
     Output s_b1 = HistogramSummary(root, std::string {"s_b1"}, b1);
     Output s_b2 = HistogramSummary(root, std::string {"s_b2"}, b2);
     Output s_x  = HistogramSummary(root, std::string {"s_x" }, x );
-    auto summary_op = MergeSummary(name("run"), {s_loss, s_w1, s_w2, s_b1, s_b2, s_x, s_y, s_yout});
+    auto summary_op = MergeSummary(name("run"), {s_loss, s_rate, s_w1, s_w2, s_b1, s_b2, s_x, s_y, s_yout});
 
     // Printing
     auto print = root.NewSubScope("print");
@@ -165,6 +169,10 @@ Network_state* network_init(Hyperparam hyp) {
     add_init_op( Assign(init, b2, Const<float>(init, 0.f, {hyp.a2_size}  )) );
     add_init_op( Assign(init, rate, Const<float>(init, global_options.hyp.learning_rate, {})) );
     auto init_op = NoOp(init.WithControlDependencies(init_ops).WithOpName("run"));
+
+    // Learning rate decay
+    auto decay = root.NewSubScope("decay");
+    state->decay_op = Output {Assign(decay, rate, Mul(decay, rate, 0.5f))}.op();
 
     // Checkpoints
     auto checkpoint = root.NewSubScope("checkpoint");
@@ -229,6 +237,18 @@ void network_batch(Network_state* state, Batch_data const& data) {
     assert(state);
 
     auto hyp = state->hyp;
+
+
+    if (hyp.learning_rate_decay
+        and state->epoch % hyp.learning_rate_decay == 0
+        and state->epoch_start == state->step
+        and state->step > 0
+    ) {
+        TF_CHECK_OK(state->session.Run({}, {}, {state->decay_op}, nullptr));
+        std::vector<Tensor> outputs;
+        TF_CHECK_OK(state->session.Run({}, {state->rate}, {}, &outputs));
+        jout << "  Reducing learning rate, down to " << outputs[0].scalar<float>()() << "\n";
+    }
     
     ++state->step;
     
@@ -253,7 +273,8 @@ void network_batch(Network_state* state, Batch_data const& data) {
     state->loss_count++;
     
     if (state->timer.update()) {
-        jout << "  Loss:  " << jup_printf("%.1f", state->loss_sum / state->loss_count) << " (iteration " << state->step;
+        jout << "  Loss:  " << jup_printf("%.4f", state->loss_sum / state->loss_count) << " (epoch "
+             << state->epoch << ", iteration " << state->step;
         if (global_options.iter_max < std::numeric_limits<int>::max()) {
             jout << "/" << global_options.iter_max;
         }
@@ -262,12 +283,14 @@ void network_batch(Network_state* state, Batch_data const& data) {
         state->loss_sum = 0;
         state->loss_count = 0;
     }
-    
-    Event event;
-    event.set_wall_time(elapsed_time());
-    event.set_step(state->step);
-    event.mutable_summary()->ParseFromString(outputs[1].scalar<std::string>()());
-    state->event_writer.WriteEvent(event);
+
+    if (global_options.iter_event and state->step % global_options.iter_event == 0) {
+        Event event;
+        event.set_wall_time(elapsed_time());
+        event.set_step(state->step);
+        event.mutable_summary()->ParseFromString(outputs[1].scalar<std::string>()());
+        state->event_writer.WriteEvent(event);
+    }
 }
 
 /*struct Tensor_data {
@@ -476,6 +499,8 @@ void network_generate_data(jup_str graph_file, Training_data* data) {
     int const n = data->hyp.batch_nodes;
     int const m = data->hyp.batch_edges();
 
+    Histogram_exact h {100};
+
     while (cur_batch < data->hyp.batch_count) {
         Batch_data out = data->batch(cur_batch);
         
@@ -492,6 +517,9 @@ void network_generate_data(jup_str graph_file, Training_data* data) {
                 
             graph_left = state_graph.graph->num_nodes() / data->hyp.gen_graph_nodes;
             //jdbg < "Loading graph" < state_graph.graph->name.begin() < graph_left ,0;
+            if (jup_str {state_graph.graph->name.begin(), (int)state_graph.graph->name.size()} == "gentoo/kde") {
+                graph_left = 0;
+            }
             if (graph_left == 0) continue;
         }
 
@@ -560,17 +588,28 @@ void network_generate_data(jup_str graph_file, Training_data* data) {
             float max = 1.f;
             for (int i = 0; i < m; ++i) {
                 max = std::max(max, out.edge_weights[cur_instance*m + i]);
-            }
+            }/*
             //jdbg < max ,0;
             for (float& f: out.edge_weights.subview(cur_instance*m, m)) {
                 f /= max;
                 //f = std::log(f/max*M_E + exp(-1));
-            }
+                }*/
             /*for (int i = 0; i < n; ++i) {
                 jdbg >= out.edge_weights.subview(cur_instance*m + i*n, n) ,0;
             }
             jdbg ,0;
             if (cur_instance == 5) std::exit(0);*/
+
+            // Empirical values for normalization
+            // cdf = c2 * exp(c1*x) + c3
+            constexpr float c1 = 4.2991;
+            constexpr float c2 = 0.0154927;
+            constexpr float c3 = -0.0184841;
+            
+            for (float& f: out.edge_weights.subview(cur_instance*m, m)) {
+                f = std::log((f/max - c3)/c2) / c1 * 2.f - 1.f;
+                h.add(f);
+            }
 
             ++cur_instance;
             --graph_left;
@@ -585,13 +624,16 @@ void network_generate_data(jup_str graph_file, Training_data* data) {
         }
     }
 
+    h.print();
+    h.print_raw("out3");
+
     graph_reader_close(&state_graph);
 
     jout << "Done. (" << timer.total() << ", " << timer.bytes_done(cur_batch * data->hyp.bytes_batch())
          << ", " << num_graph << " graphs, " << num_rewind << " rewinds)" << endl;
 }
 
-void network_shuffle(Training_data const& from, Training_data* into) {
+void network_shuffle(Training_data const& from, Training_data* into, bool silent = false) {
     assert(into);
     assert(from.hyp.valid() and into->hyp.valid());
 
@@ -621,9 +663,11 @@ void network_shuffle(Training_data const& from, Training_data* into) {
         jup_memcpy(&i_inst.edge_weights, j_inst.edge_weights);
         jup_memcpy(&i_inst.results, j_inst.results);
     }
-    
-    jout << "Done. (" << timer.total()  << ", "
-         << timer.bytes_done(into->hyp.bytes_total()) << ")" << endl;
+
+    if (not silent) {
+        jout << "Done. (" << timer.total()  << ", "
+             << timer.bytes_done(into->hyp.bytes_total()) << ")" << endl;
+    }
 }
 
 u64 hash_order_independent(Training_data* data) {
@@ -703,10 +747,11 @@ void network_train(jup_str data_file) {
         ++cur_batch;
         
         if (cur_batch >= data->hyp.batch_count) {
-            jout << "  Re-shuffling training data... "; jout.flush();
-            network_shuffle(*data, data_tmp.get());
+            network_shuffle(*data, data_tmp.get(), true);
             std::swap(data, data_tmp);
             cur_batch = 0;
+            ++state->epoch;
+            state->epoch_start = state->step;
         }
     }
 
@@ -741,7 +786,7 @@ void network_print_data_info(jup_str data_file) {
     jout << "  total floats:        " << hyp.floats_total() << "\n"
          << "  total bytes:         " << nice_bytes(size_td) << "\n"
          << "  checksum (xxHash64): " << nice_hex(hash_val) << '\n'
-         << "  checksum (o.i.):     " << nice_hex(hash_val_oi) << '\n';
+         << "  checksum (s.i.):     " << nice_hex(hash_val_oi) << '\n';
 }
 
 /*static void network_run_op(Network_state* state, jup_str name) {

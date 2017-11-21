@@ -988,7 +988,7 @@ void Histogram::add(float x) {
     }    
 }
 
-void Histogram::print(int max_width, int max_height) const {
+static void histogram_print_helper(int max_width /*= -1*/, int max_height /*= -1*/, int b, int n, Array_view<float> q_) {
     if (max_width == -1) {
         max_width = get_terminal_width();
     }
@@ -998,12 +998,7 @@ void Histogram::print(int max_width, int max_height) const {
     int width = max_width - 4;
     int height = max_height - 3;
     assert(width > 0 and height > 0);
-    if (n < b+1) {
-        jerr << "Info: " << "Tried to print a histogram without enough data (got " << n
-             << ", need " << b+1 << "\n";
-        return;
-    }
-
+    
     float x0 = q_[0];
     float x1 = q_[b];
     float xs = (x1 - x0) / (float)width;
@@ -1088,14 +1083,14 @@ void Histogram::print(int max_width, int max_height) const {
     jout << endl;
 }
 
-void Histogram::print_quant() const {
+void histogram_print_quant_helper(int b, int n, Array_view<float> q_) {
     constexpr int per_line = 10;
     auto fmt1 = "%9.2le  ";
     auto fmt2 = "    *%d    |";
     auto fmt3 = "%2d* |";
     auto fmt4 = "    |";
 
-    jout << "Quantiles (n = " << n << ", b = " << b << "):" << endl;
+    jout << "Quantiles (n = " << n << ", b = " << b << "):\n";
     
     // Header
     jout << fmt4;
@@ -1114,6 +1109,79 @@ void Histogram::print_quant() const {
     jout.flush();
 }
 
+void histogram_print_raw_helper(jup_str fname, int b, Array_view<float> q_) {
+    std::ofstream out {fname.c_str()};
+    for (int i = 0; i <= b; ++i) {
+        out << (float)i / (float)b << ' ' << q_[i] << '\n';
+    }
+    out.flush();
+}
+
+void Histogram::print(int max_width, int max_height) const {
+    if (n < b+1) {
+        jerr << "Info: Tried to print a Histogram without enough data (got " << n
+             << ", need " << b+1 << "\n";
+        return;
+    }
+    histogram_print_helper(max_width, max_height, b, n, q_);
+}
+
+void Histogram::print_quant() const {
+    if (n < b+1) {
+        jerr << "Info: Tried to print a Histogram without enough data (got " << n
+             << ", need " << b+1 << "\n";
+        return;
+    }
+    histogram_print_quant_helper(b, n, q_);
+}
+
+void Histogram::print_raw(jup_str fname) const {
+    if (n < b+1) {
+        jerr << "Info: Tried to print a Histogram without enough data (got " << n
+             << ", need " << b+1 << "\n";
+        return;
+    }
+    histogram_print_raw_helper(fname, b, q_);
+}
+
+Histogram_exact::Histogram_exact(int size) {
+    q.resize(size+1);
+}
+
+void Histogram_exact::add(float x) {
+    data.push_back(x);
+}
+
+void Histogram_exact::calculate() {
+    if (data.size() == 0) {
+        jerr << "Info: Tried to print a Histogram_exact without data\n";
+        return;
+    }
+
+    if (last_size == data.size()) return;
+    assert(last_size < data.size());
+
+    std::sort(data.begin(), data.end());
+    u64 b = q.size() - 1;
+    q[0] = data[0];
+    for (u64 i = 1; i < (u64)q.size(); ++i) {
+        q[i] = data[(i*(u64)data.size() + b-1)/b - 1];
+    }
+    last_size = data.size();
+}
+
+void Histogram_exact::print(int width, int height) {
+    calculate();
+    histogram_print_helper(width, height, q.size()-1, data.size(), q);
+}
+void Histogram_exact::print_quant() {
+    calculate();
+    histogram_print_quant_helper(q.size()-1, data.size(), q);
+}
+void Histogram_exact::print_raw(jup_str fname) {
+    calculate();
+    histogram_print_raw_helper(fname, q.size()-1, q);
+}
 
 /*
 void histogram_test() {

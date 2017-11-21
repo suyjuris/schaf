@@ -137,6 +137,10 @@ static void print_usage() {
         "    The initial learning rate of the network. Note that when loading a parameter file, "
             "the saved learning rate will be used instead.\n"
         "\n"
+        "  --learning-rate-decay,-L <val> [default: 0]\n"
+        "    The amount of epochs after which the learning rate is halved. Set to 0 to disable "
+            "learning rate decay.\n"
+        "\n"
         "  --param-in,-i <path> [default: none]\n"
         "    The parameter file to load. It is used to initialize the networks parameters and the "
             "learning rate.\n"
@@ -150,6 +154,10 @@ static void print_usage() {
         "\n"
         "  --iter-save <value> [default: " JUP_STRINGIFY(JUP_DEFAULT_ITER_SAVE) "]\n"
         "    The number of iterations after which the parameters will be saved.\n"
+        "\n"
+        "  --iter-event <value> [default: " JUP_STRINGIFY(JUP_DEFAULT_ITER_EVENT) "]\n"
+        "    The number of iterations after which an event for tensorboard will be written. Set to "
+            "0 to disable.\n"
         "\n"
         "  --help,-h\n"
         "    Prints this message.\n"
@@ -193,9 +201,12 @@ static bool parse_option(Schaf_options* options, Parse_state* state) {
     } else if (state->current == "--gen-graph-nodes") {
         pop_option_arg(state);
         options->hyp.gen_graph_nodes = get_int(state, 1);
-    } else if (state->current == "--learning-rate") {
+    } else if (state->current == "--learning-rate" or state->current == "-l") {
         pop_option_arg(state);
         options->hyp.learning_rate = get_float(state, 0.f);
+    } else if (state->current == "--learning-rate-decay" or state->current == "-L") {
+        pop_option_arg(state);
+        options->hyp.learning_rate_decay = get_int(state, 0);
     } else if (state->current == "--param-in") {
         pop_option_arg(state);
         options->param_in = state->current;
@@ -208,6 +219,9 @@ static bool parse_option(Schaf_options* options, Parse_state* state) {
     } else if (state->current == "--iter-save") {
         pop_option_arg(state);
         options->iter_save = get_int(state, 1);
+    } else if (state->current == "--iter-event") {
+        pop_option_arg(state);
+        options->iter_event = get_int(state, 0);
     } else if (state->current == "--") {
         if (not pop(state)) {
             parse_die(state, "Unexpected end of input, expected a mode.");

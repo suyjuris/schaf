@@ -822,6 +822,8 @@ void graph_print_stats(jup_str input, jup_str output) {
     metrics_print_header(*out, "degree");
     metrics_print_header(*out, "weight");
     *out << endl;
+
+    Array<u32> edge_weights;
     
     while (graph_reader_next(&state)) {
         double beg_t = elapsed_time();
@@ -855,17 +857,17 @@ void graph_print_stats(jup_str input, jup_str output) {
         jout << "Degrees: ";
         metrics_print(jout, *out, metric);}
 
-        {u32* arr = (u32*)g.edge_data.begin();
+        {edge_weights.resize(g.edge_data.size());
         for (u32 i = 0; i < g.edge_data.size(); ++i) {
-            arr[i] = g.edge_data[i].weight;
+            edge_weights[i] = g.edge_data[i].weight;
         }
         // Each weight is in there twice, but that is irrelevant
         Histogram histogram {100};
         for (u32 i = 0; i < g.edge_data.size(); ++i) {
-            if (arr[i] > 2)
-                histogram.add(arr[i]);
+            if (edge_weights[i] > 2)
+                histogram.add(edge_weights[i]);
         }
-        auto metric = metrics_calculate({arr, (int)g.edge_data.size()});
+        auto metric = metrics_calculate(edge_weights);
         jout << "Weights: ";
         metrics_print(jout, *out, metric);
         *out << endl;
@@ -873,8 +875,6 @@ void graph_print_stats(jup_str input, jup_str output) {
         histogram.print_quant();}
 
         jout << jup_printf("Done. (%.2fs)\n", elapsed_time() - beg_t) << endl;
-        
-        // The graph is now unusable.
     }
     
 }
