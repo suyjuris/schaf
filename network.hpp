@@ -9,7 +9,8 @@ namespace jup {
 #define JUP_DEFAULT_BATCH_SIZE        64
 #define JUP_DEFAULT_BATCH_NODES       16
 #define JUP_DEFAULT_GEN_GRAPH_NODES   32
-#define JUP_DEFAULT_LEARNING_RATE   0.1f
+#define JUP_DEFAULT_LEARNING_RATE    0.1
+#define JUP_DEFAULT_TEST_FRAC        0.1
 
 struct Hyperparam {
     int batch_count = JUP_DEFAULT_BATCH_COUNT; // batches per training data
@@ -18,8 +19,10 @@ struct Hyperparam {
     
     int gen_graph_nodes = JUP_DEFAULT_GEN_GRAPH_NODES; // nodes needed per instance
 
-    float learning_rate = JUP_DEFAULT_LEARNING_RATE; // you should know what that means...
+    float learning_rate = (float)JUP_DEFAULT_LEARNING_RATE; // you should know what that means...
     int learning_rate_decay = 0; // number of epochs after which the learning rate is halved.
+
+    float test_frac = (float)JUP_DEFAULT_TEST_FRAC; // amount of training data to use as test data
 
     int a1_size = 64; // size of the output of the first layer
     int a2_size =  1; // size of the output of the second layer (has to be 1, if it is the last layer)
@@ -88,7 +91,12 @@ struct Network_state;
 
 Network_state* network_init(Hyperparam hyp);
 void network_free(Network_state* state);
-void network_main();
+void network_restore(Network_state* state);
+void network_save(Network_state* state);
+
+void network_shuffle(Training_data const& from, Training_data* into, int offset = 0, bool silent = false);
+void network_load_data(jup_str data_file, Hyperparam hyp, Unique_ptr_free<Training_data>* data_train,
+    Unique_ptr_free<Training_data>* data_test);
 
 void network_prepare_data(jup_str graph_file, jup_str data_file, Hyperparam hyp);
 void network_train(jup_str data_file);

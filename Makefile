@@ -1,7 +1,7 @@
 
 # Generic C++ Makefile
 
-#@Incomplete Add Support for Windows again
+#TODO Add Support for Windows again
 
 ifeq ($(OS),Windows_NT)
   MODE = WINDOWS
@@ -16,11 +16,13 @@ ifeq ($(MODE),WINDOWS)
   LIBS += -lWs2_32 -lversion -static-libstdc++ -static-libgcc
 endif
 
-CXX = g++
+ifndef CXX
+  CXX = g++
+endif
 
 CXXFLAGS = -g -Wall -Werror -pedantic -fmax-errors=2
 CPPFLAGS = -std=c++1z -DJUP_OS=$(MODE) -DJUP_OS_$(MODE) -Ibuild_files/include_linux
-LDFLAGS  = -Wall -ltensorflow_cc -ltensorflow_framework
+LDFLAGS  = -Wall -ltensorflow_cc -ltensorflow_framework -lstdc++fs
 
 ifdef SCHAF_FAST
   CXXFLAGS += -O3 -march=native

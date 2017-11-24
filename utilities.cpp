@@ -1183,25 +1183,18 @@ void Histogram_exact::print_raw(jup_str fname) {
     histogram_print_raw_helper(fname, q.size()-1, q);
 }
 
-/*
-void histogram_test() {
-    Histogram h {100};
-    std::mt19937_64 mt;
-    std::normal_distribution<float> dist;
-    for (int i = 0; i < 1000000; ++i) {
-        h.add(dist(mt));
+jup_str get_date_string(std::time_t t) {
+    if (t == (std::time_t)-1) {
+        t = std::time(nullptr);
     }
 
-    auto cdf = [](float x) {
-        return 0.5f * std::erfc(-x * (float)M_SQRT1_2);
-    };
-    for (int i = 0; i < h.b + 1; ++i) {
-        jout << jup_printf("%2d %9.2e\n", i, (double)(cdf(h.q_[i]) - (float)i/(float)h.b));
-    }
-    h.print();
+    std::tm* tt = std::localtime(&t);
+    assert(tt);
+    constexpr int max_size = 22;
+    Buffer_view_mut result = {tmp_alloc(max_size), max_size};
+    result[0] = 0;
+    assert(std::strftime(result.data(), result.size(), "%Y-%m-%d_%H-%M-%S", tt));
+    return result;
 }
-*/
-    
-
 
 } /* end of namespace jup */

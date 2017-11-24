@@ -451,6 +451,11 @@ struct Histogram_exact {
 };
 
 /**
+ * Returns a formatted date and time in the form 2017-12-15_15-04-59. Uses tmp_alloc for storage.
+ */
+jup_str get_date_string(std::time_t timestamp = -1);
+
+/**
  * Boilerplate code for iterating over f(x), with user-defined f and x in some range.
  */
 template <typename Partial_viewer>

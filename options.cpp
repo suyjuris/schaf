@@ -141,23 +141,30 @@ static void print_usage() {
         "    The amount of epochs after which the learning rate is halved. Set to 0 to disable "
             "learning rate decay.\n"
         "\n"
+        "  --test-frac <val> [default: " JUP_STRINGIFY(JUP_DEFAULT_TEST_FRAC) "]\n"
+        "    The fraction of the data set that is used as test data.\n"
+        "\n"
         "  --param-in,-i <path> [default: none]\n"
         "    The parameter file to load. It is used to initialize the networks parameters and the "
             "learning rate.\n"
-        "\n"
-        "  --param-out,-o <path> [default: none]\n"
-        "    The parameter file to save. The parameters of the network will be saved to this "
-            "location.\n"
         "\n"
         "  --iter-max <value> [default: none]\n"
         "    The maximum number of training iterations for the network.\n"
         "\n"
         "  --iter-save <value> [default: " JUP_STRINGIFY(JUP_DEFAULT_ITER_SAVE) "]\n"
-        "    The number of iterations after which the parameters will be saved.\n"
+        "    The number of iterations after which the parameters will be saved. Set to 0 to "
+            "disable saving. The files will be saved in the directory specified by --logdir. If "
+            "that options is not set, saving of parameters will also be disabled.\n"
         "\n"
         "  --iter-event <value> [default: " JUP_STRINGIFY(JUP_DEFAULT_ITER_EVENT) "]\n"
-        "    The number of iterations after which an event for tensorboard will be written. Set to "
-            "0 to disable.\n"
+        "    The number of iterations after which a summary for tensorboard will be written. Set "
+            "to 0 to disable. The files will be saved in the directory specified by --logdir. If "
+            "that options is not set, summaries will also be disabled.\n"
+        "\n"
+        "  --logdir <path> [default: " JUP_DEFAULT_LOGDIR "]\n"
+        "    The location to write the summary logfiles (for tensorboard) and the parameter values "
+            "to. The directory will be created, if necessary. If this is the empty string, both "
+            "logging and saving of parameters are disabled.\n"
         "\n"
         "  --help,-h\n"
         "    Prints this message.\n"
@@ -207,12 +214,12 @@ static bool parse_option(Schaf_options* options, Parse_state* state) {
     } else if (state->current == "--learning-rate-decay" or state->current == "-L") {
         pop_option_arg(state);
         options->hyp.learning_rate_decay = get_int(state, 0);
-    } else if (state->current == "--param-in") {
+    } else if (state->current == "--test-frac") {
+        pop_option_arg(state);
+        options->hyp.test_frac = get_float(state, 0.f, 1.0f);
+    } else if (state->current == "--param-in" or state->current == "-i") {
         pop_option_arg(state);
         options->param_in = state->current;
-    } else if (state->current == "--param-out") {
-        pop_option_arg(state);
-        options->param_out = state->current;
     } else if (state->current == "--iter-max") {
         pop_option_arg(state);
         options->iter_max = get_int(state, 0);
@@ -222,6 +229,9 @@ static bool parse_option(Schaf_options* options, Parse_state* state) {
     } else if (state->current == "--iter-event") {
         pop_option_arg(state);
         options->iter_event = get_int(state, 0);
+    } else if (state->current == "--logdir") {
+        pop_option_arg(state);
+        options->logdir = state->current;
     } else if (state->current == "--") {
         if (not pop(state)) {
             parse_die(state, "Unexpected end of input, expected a mode.");

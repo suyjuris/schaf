@@ -171,23 +171,32 @@ Network_state* network_init(Hyperparam hyp) {
     auto init_op = NoOp(init.WithControlDependencies(init_ops).WithOpName("run"));
 
     // Learning rate decay
-    //auto decay = root.NewSubScope("decay");
-    state->decay_op = NoOp(root);
-    //state->decay_op = Output {Assign(decay, rate, Mul(decay, rate, 0.5f))}.op();
+    auto decay = root.NewSubScope("decay");
+    state->decay_op = Output {Assign(decay, rate, Mul(decay, rate, 0.5f))}.op();
 
     // Checkpoints
     auto checkpoint = root.NewSubScope("checkpoint");
     std::vector<Output> params_op       { rate,   w1,   b1,   w2,   b2 };
     std::vector<std::string> params_str {"rate", "w1", "b1", "w2", "b2"};
-    
+
     Tensor params_name  {DT_STRING, {(int)params_op.size()}}; 
     Tensor params_slice {DT_STRING, {(int)params_op.size()}}; 
     std::vector<DataType>    params_type  {params_op.size(), DT_FLOAT};
     for (int i = 0; i < (int)params_op.size(); ++i) {
         params_name.flat<std::string>()(i) = params_str[i];
     }
-    state->save_op = SaveV2(checkpoint.WithOpName("save"), std::string {global_options.param_out},
-        params_name, params_slice, params_op);
+    if (global_options.logdir and global_options.iter_save) {
+        std__filesystem::path path {global_options.logdir.c_str()};
+        path /= get_date_string().c_str();
+        std::error_code ec;
+        std__filesystem::create_directories(path, ec);
+        if (ec) {
+            die("%s\nwhile trying to create directory %s", ec.message(), path.c_str());
+        }
+
+        state->save_op = SaveV2(checkpoint.WithOpName("save"), (path / "param").native(), params_name,
+            params_slice, params_op);
+    }
 
     auto restore_op_main = RestoreV2(checkpoint, std::string {global_options.param_in},
         params_name, params_slice, params_type);
@@ -211,10 +220,20 @@ Network_state* network_init(Hyperparam hyp) {
     event.set_step(state->step);
     event.set_graph_def(graph_data);
 
-    new (&state->event_writer) EventsWriter {"/mnt/win_ssd/Philipp10/Dokumente/Uni/Bachelorarbeit/schaf/tf_data/test1"};
-    assert( state->event_writer.Init() );
-    state->event_writer.WriteEvent(event);
+    if (global_options.logdir and global_options.iter_event) {
+        std__filesystem::path path {global_options.logdir.c_str()};
+        path /= get_date_string().c_str();
+        std::error_code ec;
+        std__filesystem::create_directories(path, ec);
+        if (ec) {
+            die("%s\nwhile trying to create directory %s", ec.message(), path.c_str());
+        }
 
+        new (&state->event_writer) EventsWriter {(path / "run").native()};
+        assert( state->event_writer.Init() );
+        state->event_writer.WriteEvent(event);
+    }
+    
     // Initialize session
     new (&state->session) ClientSession {root};
 
@@ -256,9 +275,6 @@ void network_batch(Network_state* state, Batch_data const& data) {
     Tensor data_x {DT_FLOAT, {hyp.batch_size, hyp.batch_edges()}};
     std::memcpy(data_x.flat<float>().data(), data.edge_weights.data(), data.edge_weights.size() * sizeof(float));
 
-    //for (int i = 0; i < 16; ++i)
-    //    jdbg >= Array_view<float> {data_x.flat<float>().data()+16*i, 16} ,0;
-    
     Tensor data_y {DT_FLOAT, {hyp.batch_size}};
     std::memcpy(data_y.flat<float>().data(), data.results.data(), data.results.size() * sizeof(float));
     
@@ -273,18 +289,6 @@ void network_batch(Network_state* state, Batch_data const& data) {
     state->loss_sum += outputs[0].scalar<float>()();
     state->loss_count++;
     
-    if (state->timer.update()) {
-        jout << "  Loss:  " << jup_printf("%.4f", state->loss_sum / state->loss_count) << " (epoch "
-             << state->epoch << ", iteration " << state->step;
-        if (global_options.iter_max < std::numeric_limits<int>::max()) {
-            jout << "/" << global_options.iter_max;
-        }
-        jout << ", " << state->timer.counter(state->step) << " iter/s)" << endl;
-
-        state->loss_sum = 0;
-        state->loss_count = 0;
-    }
-
     if (global_options.iter_event and state->step % global_options.iter_event == 0) {
         Event event;
         event.set_wall_time(elapsed_time());
@@ -292,6 +296,33 @@ void network_batch(Network_state* state, Batch_data const& data) {
         event.mutable_summary()->ParseFromString(outputs[1].scalar<std::string>()());
         state->event_writer.WriteEvent(event);
     }
+}
+
+float network_validate(Network_state* state, Training_data /*const*/& data_test) {
+    using namespace tensorflow;
+    
+    auto hyp = data_test.hyp;
+    
+    float loss_sum = 0.f;
+    Tensor data_x {DT_FLOAT, {hyp.batch_size, hyp.batch_edges()}};
+    Tensor data_y {DT_FLOAT, {hyp.batch_size}};
+    
+    std::vector<Tensor> outputs;
+
+    for (int i = 0; i < hyp.batch_count; ++i) {
+        auto batch = data_test.batch(i);
+        std::memcpy(data_x.flat<float>().data(), batch.edge_weights.data(), batch.edge_weights.size() * sizeof(float));
+        std::memcpy(data_y.flat<float>().data(), batch.results.data(), batch.results.size() * sizeof(float));
+        TF_CHECK_OK(state->session.Run(
+            {{state->x, data_x}, {state->y, data_y}},
+            {state->loss},
+            {},
+            &outputs
+        ));
+        loss_sum += outputs[0].scalar<float>()();
+    }
+
+    return loss_sum / hyp.batch_count;
 }
 
 /*struct Tensor_data {
@@ -314,6 +345,9 @@ void network_save(Network_state* state) {
     
     assert(state);
 
+    // This is a precondition of calling this function
+    assert(global_options.logdir and global_options.iter_save);
+        
     TF_CHECK_OK(state->session.Run({}, {}, {state->save_op}, nullptr));
     
     /*std::vector<Tensor> outputs;
@@ -634,14 +668,15 @@ void network_generate_data(jup_str graph_file, Training_data* data) {
          << ", " << num_graph << " graphs, " << num_rewind << " rewinds)" << endl;
 }
 
-void network_shuffle(Training_data const& from, Training_data* into, bool silent = false) {
+void network_shuffle(Training_data const& from, Training_data* into, int offset, bool silent) {
     assert(into);
     assert(from.hyp.valid() and into->hyp.valid());
+    assert(0 <= offset and offset < from.hyp.batch_count);
 
     if (from.hyp.batch_nodes != into->hyp.batch_nodes) {
         die("Incompatible sets of hyperparameters, different number of nodes per instance (have: %d"
             ", want: %d)", from.hyp.batch_nodes, into->hyp.batch_nodes+0);
-    } else if (from.hyp.floats_total() < into->hyp.floats_total()) {
+    } else if (from.hyp.floats_batch() * (from.hyp.batch_count - offset) < into->hyp.floats_total()) {
         die("Incompatible sets of hyperparameters, there is not enough data to fill the target "
             "(have: %d floats, want: %d floats)", from.hyp.floats_total(), into->hyp.floats_total());
     }
@@ -649,8 +684,8 @@ void network_shuffle(Training_data const& from, Training_data* into, bool silent
     Timer timer;
 
     Array<int> left;
-    left.resize(from.hyp.num_instances());
-    for (int i = 0; i < left.size(); ++i) left[i] = i;
+    left.resize(into->hyp.num_instances());
+    for (int i = 0; i < left.size(); ++i) left[i] = i + offset * from.hyp.batch_size;
 
     Rng rng;
     for (int i = 0; i < into->hyp.num_instances(); ++i) {
@@ -671,10 +706,12 @@ void network_shuffle(Training_data const& from, Training_data* into, bool silent
     }
 }
 
-u64 hash_order_independent(Training_data* data) {
+static u64 hash_shuffle_inv(Training_data /*const*/& data, int last_inst = -1) {
+    assert(last_inst <= data.hyp.num_instances());
     u64 hash = 0;
-    for (int i = 0; i < data->hyp.num_instances(); ++i) {
-        auto inst = data->instance(i);
+    int end = last_inst < 0 ? data.hyp.num_instances() : last_inst;
+    for (int i = 0; i < end; ++i) {
+        auto inst = data.instance(i);
         hash += inst.edge_weights.get_hash() + inst.results.get_hash();
     }
     return hash;
@@ -688,16 +725,55 @@ void network_prepare_data(jup_str graph_file, jup_str data_file, Hyperparam hyp)
     auto data = Training_data::make_unique(hyp);
     network_generate_data(graph_file, data.get());
 
-    u64 hash_val_oi = hash_order_independent(data.get());
+    u64 hash_val_oi = hash_shuffle_inv(*data);
     jout << "Shuffling... (shuffle-invariant checksum: " << nice_hex(hash_val_oi) << ")" << endl;
     auto data2 = Training_data::make_unique(hyp);
     network_shuffle(*data, data2.get());
-    assert(hash_val_oi == hash_order_independent(data2.get()));
+    assert(hash_val_oi == hash_shuffle_inv(*data2));
     std::swap(data, data2);
 
     u64 hash_val = XXH64(data.get(), Training_data::bytes_total(data->hyp), 0);
     jout << "Writing to file " << data_file << ", Checksum (xxHash64): " << nice_hex(hash_val) << endl;
     save_bytes(data_file, *data, hyp.bytes_total());
+}
+
+void network_load_data(
+    jup_str data_file, Hyperparam hyp, Unique_ptr_free<Training_data>* data_train,
+    Unique_ptr_free<Training_data>* data_test
+) {
+    assert(data_train and data_test);
+
+    jout << "  Loading training data..." << endl;
+
+    // Load the file
+    Hyperparam hyp_td;
+    load_bytes(data_file, &hyp_td, -1);
+    auto data_orig = Training_data::make_unique(hyp_td);
+    load_bytes(data_file, data_orig.get(), Training_data::bytes_extra(hyp_td));
+
+    // Check that there is enough data
+    if (hyp_td.floats_total() < hyp.floats_total()) {
+        die("Set of training data is too small, there is not enough data to fill the target "
+            "(have: %d floats, want: %d floats)", hyp_td.floats_total(), hyp.floats_total());        
+    }
+
+    Hyperparam hyp_train = hyp;
+    Hyperparam hyp_test  = hyp;
+    hyp_train.batch_count = (1.f - hyp.test_frac) * hyp.batch_count;
+    hyp_test.batch_count = hyp.batch_count - hyp_train.batch_count;
+    jout << "  Using " << hyp_train.batch_count << " batches for training, " << hyp_test.batch_count
+         << " for testing\n";
+    
+    *data_train = Training_data::make_unique(hyp_train);
+    *data_test  = Training_data::make_unique(hyp_test );
+
+    // Do the copying via shuffle (which also checks that the sizes are correct and handles
+    // different values of batch_size correctly
+    network_shuffle(*data_orig, data_train->get(), 0, true);
+    network_shuffle(*data_orig, data_test->get(), (**data_train).hyp.batch_count, true);
+
+    u64 hash = hash_shuffle_inv(*data_orig, hyp.num_instances());
+    assert(hash == hash_shuffle_inv(**data_train) + hash_shuffle_inv(**data_test));
 }
 
 void network_train(jup_str data_file) {
@@ -716,21 +792,10 @@ void network_train(jup_str data_file) {
          << "  a2_size:             " << hyp.a2_size << '\n';
     
     jout << "Initializing..." << endl;
-    jout << "  Loading training data..." << endl;
-    
-    Hyperparam hyp_td;
-    load_bytes(data_file, &hyp_td, -1);
-    auto data_orig = Training_data::make_unique(hyp_td);
-    load_bytes(data_file, data_orig.get(), Training_data::bytes_extra(hyp_td));
-    
-    auto data     = Training_data::make_unique(hyp);
-    auto data_tmp = Training_data::make_unique(hyp);
-    data->hyp     = hyp;
-    data_tmp->hyp = hyp;
 
-    jout << "  Shuffling... "; jout.flush();
-    network_shuffle(*data_orig, data.get());
-    data_orig.release();
+    Unique_ptr_free<Training_data> data_train, data_test, data_tmp;
+    network_load_data(data_file, hyp, &data_train, &data_test);
+    data_tmp = Training_data::make_unique(data_train->hyp);
 
     jout << "  Creating neural network..." << endl;
     auto state = network_init(hyp);
@@ -744,15 +809,36 @@ void network_train(jup_str data_file) {
     //int initial_step = state->step;
     int cur_batch = 0;
     while (state->step < global_options.iter_max) {
-        network_batch(state, data->batch(cur_batch));
+        network_batch(state, data_train->batch(cur_batch));
         ++cur_batch;
         
-        if (cur_batch >= data->hyp.batch_count) {
-            network_shuffle(*data, data_tmp.get(), true);
-            std::swap(data, data_tmp);
+        if (cur_batch >= data_train->hyp.batch_count) {
+            network_shuffle(*data_train, data_tmp.get(), 0, true);
+            std::swap(data_train, data_tmp);
             cur_batch = 0;
             ++state->epoch;
             state->epoch_start = state->step;
+        }
+
+        if (state->step
+            and global_options.iter_save
+            and global_options.logdir
+            and state->step % global_options.iter_save == 0
+        ) {
+            network_save(state);
+        }
+
+        if (state->timer.update()) {
+            float loss_test = network_validate(state, *data_test);
+            jout << jup_printf("  Loss: %.4f train, %.4f test", state->loss_sum / state->loss_count, loss_test)
+                 << " (epoch " << state->epoch << ", iteration " << state->step;
+            if (global_options.iter_max < std::numeric_limits<int>::max()) {
+                jout << "/" << global_options.iter_max;
+            }
+            jout << ", " << state->timer.counter(state->step) << " iter/s)" << endl;
+
+            state->loss_sum = 0;
+            state->loss_count = 0;
         }
     }
 
@@ -774,7 +860,7 @@ void network_print_data_info(jup_str data_file) {
     auto data = Training_data::make_unique(hyp);
     load_bytes(data_file, data.get(), Training_data::bytes_extra(hyp));
 
-    u64 hash_val_oi = hash_order_independent(data.get());
+    u64 hash_val_oi = hash_shuffle_inv(*data);
     u64 hash_val = XXH64(data.get(), Training_data::bytes_total(data->hyp), 0);
     
     jout << "\nData:\n";

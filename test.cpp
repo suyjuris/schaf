@@ -127,5 +127,21 @@ void test_conversions() {
     test_conversions_helper2<s64>("%" PRId32, "-9223372036854775809", "9223372036854775808");
 }
 
+void test_histogram() {
+    Histogram h {100};
+    std::mt19937_64 mt;
+    std::normal_distribution<float> dist;
+    for (int i = 0; i < 1000000; ++i) {
+        h.add(dist(mt));
+    }
+
+    auto cdf = [](float x) {
+        return 0.5f * std::erfc(-x * (float)M_SQRT1_2);
+    };
+    for (int i = 0; i < h.b + 1; ++i) {
+        jout << jup_printf("%2d %9.2e\n", i, (double)(cdf(h.q_[i]) - (float)i/(float)h.b));
+    }
+    h.print();
+}
 
 } /* end of namespace jup */

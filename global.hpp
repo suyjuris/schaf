@@ -31,6 +31,18 @@
 #include <type_traits>
 #include <vector>
 
+#ifdef __has_include
+#if __has_include(<filesystem>)
+#include <filesystem>
+namespace std__filesystem = std::filesystem;
+#define __JUP_FOUND_FILESYSTEM
+#endif
+#endif
+#ifndef __JUP_FOUND_FILESYSTEM
+#include <experimental/filesystem>
+namespace std__filesystem = std::experimental::filesystem;
+#endif
+
 // zlib
 #include <zlib.h>
 

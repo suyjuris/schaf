@@ -6,7 +6,110 @@ namespace jup {
 class Buffer;
 
 /**
- * A read only objects referencing a continuous memory region of a certain size
+ * A read-write object referencing a continuous memory region of a certain size
+ * with arbitrary contents. Supports iteration over the bytes. Has no ownership
+ * of any kind. This is a simple pointer + size combination.
+ *
+ * If you want to store a c-style string in here, use the size of the string
+ * without the terminating zero and call c_str() to extract the string, instead
+ * of data().
+ */
+struct Buffer_view_mut {
+	constexpr Buffer_view_mut(void* data = nullptr, int size = 0):
+		m_data{data}, m_size{size}
+    {
+        assert(data == nullptr ? size == 0 : size >= 0);
+    }
+    constexpr Buffer_view_mut(std::nullptr_t): Buffer_view_mut{} {}
+	
+	Buffer_view_mut(Buffer& buf);
+	
+	constexpr Buffer_view_mut(char* str):
+		Buffer_view_mut{str, (int)std::strlen(str)} {}
+
+
+	/**
+	 * Construct from arbitrary object. This is not a constructor due to the
+	 * obvious overloading problems.
+	 */
+	template<typename T>
+	constexpr static Buffer_view_mut from_obj(T& obj) {
+		return Buffer_view_mut {&obj, sizeof(obj)};
+	}
+
+	constexpr int size() const { return m_size; }
+	
+	constexpr char* begin() { return (char*)m_data; }
+	constexpr char* end()   { return (char*)m_data + m_size; }
+	constexpr char* data()  { return begin(); }
+	constexpr char const* begin() const { return (char const*)m_data; }
+	constexpr char const* end()   const { return (char const*)m_data + m_size; }
+	constexpr char const* data()  const { return begin(); }
+
+    char& front() { return (*this)[0]; }
+    char& back()  { return (*this)[size() - 1]; }
+    char front() const { return (*this)[0]; }
+    char back()  const { return (*this)[size() - 1]; }
+
+	/**
+	 * Provide access to the bytes, with bounds checking.
+	 */
+	char operator[] (int pos) const {
+		assert(0 <= pos and pos < size());
+		return data()[pos];
+	}
+    char& operator[] (int pos) {
+		assert(0 <= pos and pos < size());
+		return data()[pos];
+	}
+
+	/**
+	 * Return a c-style string. Same as data, but asserts that the character
+	 * just behind the last one is zero.
+	 */
+	char const* c_str() const {
+		assert(*(data() + size()) == 0);
+		return data();
+	}
+
+    /**
+     * Return whether the pointer is inside the buffer
+     */
+    template <typename T>
+    bool inside(T const* ptr) const {
+        // duplicates Buffer::inside
+        return (void const*)begin() <= (void const*)ptr
+            and (void const*)(ptr + 1) <= (void const*)end();
+    }
+    
+	/**
+	 * Generate a simple hash of the contents of this Buffer_view_mut. An empty
+	 * buffer must have a hash of 0.
+	 */
+	u64 get_hash() const;
+
+	/**
+	 * Compare for byte-wise equality. 
+	 */
+	bool operator== (Buffer_view_mut const& buf) const {
+		if (size() != buf.size()) return false;
+        return std::memcmp(data(), buf.data(), size()) == 0;
+	}
+	bool operator!= (Buffer_view_mut const& buf) const { return !(*this == buf); }
+
+    /**
+     * Return whether the buffer is valid and not empty.
+     */
+    constexpr operator bool() const {
+        return data() and size();
+    }
+    
+	void* m_data;
+	int m_size;
+};
+
+/**
+ * A read only object referencing a continuous memory region of a certain size
  * with arbitrary contents. Supports iteration over the bytes. Has no ownership
  * of any kind. This is a simple pointer + size combination.
  *
@@ -22,6 +125,8 @@ struct Buffer_view {
     }
     constexpr Buffer_view(std::nullptr_t): Buffer_view{} {}
 	
+	Buffer_view(Buffer_view_mut const& buf): m_data{buf.data()}, m_size{buf.size()} {}
+    
 	Buffer_view(Buffer const& buf);
 	
 	template<typename T>
@@ -110,8 +215,12 @@ struct Buffer_view {
     /**
      * Return whether the buffer is valid and not empty.
      */
-    constexpr operator bool() const {
+    constexpr explicit operator bool() const {
         return data() and size();
+    }
+
+    operator std::string() const {
+        return {data(), (std::size_t)size()};
     }
     
 	void const* m_data;
