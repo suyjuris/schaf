@@ -233,9 +233,12 @@ Network_state* network_init(Hyperparam hyp) {
         assert( state->event_writer.Init() );
         state->event_writer.WriteEvent(event);
     }
+
+    SessionOptions session_options;
+    //session_options.config.set_log_device_placement(true);
     
     // Initialize session
-    new (&state->session) ClientSession {root};
+    new (&state->session) ClientSession {root, session_options};
 
     state->x    = x;
     state->y    = y;
@@ -281,7 +284,7 @@ void network_batch(Network_state* state, Batch_data const& data) {
     std::vector<Tensor> outputs;
     TF_CHECK_OK(state->session.Run(
         {{state->x, data_x}, {state->y, data_y}},
-        {state->loss, state->summary_op},
+        {state->loss},
         {state->update_op},
         &outputs
     ));
@@ -290,10 +293,18 @@ void network_batch(Network_state* state, Batch_data const& data) {
     state->loss_count++;
     
     if (global_options.iter_event and state->step % global_options.iter_event == 0) {
+        outputs.clear();
+        TF_CHECK_OK(state->session.Run(
+            {{state->x, data_x}, {state->y, data_y}},
+            {state->summary_op},
+            {},
+            &outputs
+        ));
+        
         Event event;
         event.set_wall_time(elapsed_time());
         event.set_step(state->step);
-        event.mutable_summary()->ParseFromString(outputs[1].scalar<std::string>()());
+        event.mutable_summary()->ParseFromString(outputs[0].scalar<std::string>()());
         state->event_writer.WriteEvent(event);
     }
 }
@@ -534,8 +545,6 @@ void network_generate_data(jup_str graph_file, Training_data* data) {
     int const n = data->hyp.batch_nodes;
     int const m = data->hyp.batch_edges();
 
-    Histogram h {100};
-
     while (cur_batch < data->hyp.batch_count) {
         Batch_data out = data->batch(cur_batch);
         
@@ -587,7 +596,6 @@ void network_generate_data(jup_str graph_file, Training_data* data) {
 
             // Whether to have a positive or a negative example
             if (global_rng.gen_bool()) {
-                /*
                 for (int i = 0; i < 32; ++i) {
                     // Swap edges a and b
                     u32 a = global_rng.gen_uni(m - n);
@@ -604,15 +612,14 @@ void network_generate_data(jup_str graph_file, Training_data* data) {
                     std::swap(out.edge_weights[cur_instance*m + a ], out.edge_weights[cur_instance*m + b ]);
                     std::swap(out.edge_weights[cur_instance*m + a_], out.edge_weights[cur_instance*m + b_]);
                 }
-                */
                 
-                for (int i = 0; i < 32; ++i) {
+                /*for (int i = 0; i < 32; ++i) {
                     // Add 10 to a random edge
                     u32 a = global_rng.gen_uni(m - n);
                     a += a / n + 1;
 
                     out.edge_weights[cur_instance*m + a] += 10;
-                }
+                    }*/
 
                 out.results[cur_instance] = -1.f;
             } else {
@@ -643,7 +650,6 @@ void network_generate_data(jup_str graph_file, Training_data* data) {
             
             for (float& f: out.edge_weights.subview(cur_instance*m, m)) {
                 f = std::log((f/max - c3)/c2) / c1 * 2.f - 1.f;
-                //h.add(f);
             }
 
             ++cur_instance;
@@ -658,9 +664,6 @@ void network_generate_data(jup_str graph_file, Training_data* data) {
             ++cur_batch;
         }
     }
-
-    h.print();
-    h.print_raw("out3");
 
     graph_reader_close(&state_graph);
 
