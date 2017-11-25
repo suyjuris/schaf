@@ -1,4 +1,5 @@
 
+#include "libs/sparsehash.hpp"
 #include "libs/xxhash.hpp"
 
 #include "array.hpp"
@@ -408,116 +409,94 @@ void network_free(Network_state* state) {
     delete state;
 }
 
-struct Node_prio {
-    u32 node;
-    u32 weight;
+struct Memberhip_tester {
+    static constexpr int size = 128;
+    u64 data[size];
 
-    bool operator< (Node_prio o) const {
-        return node < o.node;
+    void clear() {
+        std::memset(data, 0, sizeof(u64)*size);
+    }
+    void add(u32 node) {
+        u64 i1 = (node >> 6) % size;
+        u64 i2 = node & 0x3f;
+        data[i1] |= 1 << i2;
+    }
+    bool count(u32 node) {
+        u64 i1 = (node >> 6) % size;
+        u64 i2 = node & 0x3f;
+        return data[i1] & (1 << i2);
     }
 };
 
 struct Neighbourhood_finder {
     Array<u32> result;
-    Array<Node_prio> nodes;
+    google::dense_hash_map<u32, u32> nodes_h;
+    Memberhip_tester memtest;
 
     Array_view<u32> find(Graph const& graph, u32 node, int count);
+
+    Neighbourhood_finder() {
+        nodes_h.set_empty_key((u32)-1);
+        nodes_h.set_deleted_key((u32)-2);
+    }
 };
 
-__jup_dbg(Node_prio, weight)
-
-int interpolation_search(Array_view<Node_prio> arr, u32 node) {
-    if (arr.size() < 256) {
-        int result = 0;
-        for (int i = 0; i < arr.size(); ++i) {
-            result += arr[i].node < node;
-        }
-        return (result < arr.size() and arr[result].node == node) ? result : -1;
-    }
-    
-    int beg = 0;
-    int end = arr.size() - 1;
-
-    while (beg < end and arr[beg].node <= node and node < arr[end].node) {
-        int exp = beg + (node - arr[beg].node) * (end - beg) / (arr[end].node - arr[beg].node);
-        if (arr[exp].node < node) {
-            beg = exp + 1;
-        } else if (arr[exp].node > node) {
-            end = exp - 1;
-        } else {
-            return exp;
-        }
-    }
-    if (arr.size() and arr[end].node == node) {
-        return end;
-    } else {
-        return -1;
-    }
-}
-
 Array_view<u32> Neighbourhood_finder::find(Graph const& graph, u32 node, int count) {
-    nodes.reserve(16);
-    nodes.reset();
+    nodes_h.clear();
+    memtest.clear();
+    
     result.reset();
-
     result.push_back(node);
+    memtest.add(node);
 
     while (result.size() < count) {
-        std::sort(nodes.begin(), nodes.end());
-
-        auto size = nodes.size();
         u32 last = result.back();
         for (Edge i: graph.adjacent(last)) {
-            if (result.count(i.other)) continue;
-
-            auto index = interpolation_search({nodes.data(), size}, i.other);
-            if (index != -1) {
-                nodes[index].weight += i.weight;
-            } else {
-                if (i.weight > 2 or (int)i.weight > nodes.size()) {
-                    nodes.push_back({i.other, i.weight});
-                }
-            }
+            if (memtest.count(i.other) and result.count(i.other)) continue;
+            
+            nodes_h[i.other] += i.weight;
         }
 
-        if (not nodes) {
-            break;
-        }
+        if (nodes_h.size() == 0) break;
 
         auto f = [](u32 x) { return (x-1)*(x-1); };
 
         int sum = 0;
-        for (int i = 0; i < nodes.size(); ++i) {
-            sum += f(nodes[i].weight);
-            
+        for (auto i: nodes_h) {
+            sum += f(i.second);
         }
         
-        int arg = -1;
+        u32 arg_node = -1;
         if (sum == 0) {
-            arg = global_rng.gen_uni(nodes.size());
-        } else {        
-            int val = global_rng.gen_uni(sum);
-            for (int i = 0; i < nodes.size(); ++i) {
-                val -= f(nodes[i].weight);
+            int val = global_rng.gen_uni(nodes_h.size());
+            for (auto i: nodes_h) {
+                --val;
                 if (val < 0) {
-                    arg = i;
+                    arg_node = i.first;
+                    break;
+                }
+            }
+        } else {
+            int val = global_rng.gen_uni(sum);
+            for (auto i: nodes_h) {
+                val -= f(i.second);
+                if (val < 0) {
+                    arg_node = i.first;
                     break;
                 }
             }
         }
-        assert(arg >= 0);
+        assert(arg_node != (u32)-1);
         
-        result.push_back(nodes[arg].node);
-        nodes[arg] = nodes.back();
-        nodes.addsize(-1);
+        result.push_back(arg_node);
+        memtest.add(arg_node);
+        nodes_h.erase(arg_node);
     }
-
+    
     while (result.size() < count) {
         result.push_back(-1);
     }
     assert(result.size() == count);
-
-    std::sort(result.begin(), result.end());
     
     return result;
 }
@@ -582,15 +561,17 @@ void network_generate_data(jup_str graph_file, Training_data* data) {
             
             u32 node = global_rng.gen_uni(state_graph.graph->num_nodes());
             auto nodes = neighbours.find(*state_graph.graph, node, n);
+            
+            int nodes_end = nodes.size();
+            while (nodes_end > 0 and nodes[nodes_end - 1] == (u32)-1) --nodes_end;
 
-            for (int i = 0; i < nodes.size(); ++i) {
-                int j = 0;
-                if (nodes[i] == (u32)-1) continue;
+            for (int i = 0; i+1 < nodes_end; ++i) {
                 for (Edge e: state_graph.graph->adjacent(nodes[i])) {
-                    while (j < nodes.size() and e.other > nodes[j]) ++j;
-                    if (j >= nodes.size()) break;
-                    if (e.other != nodes[j]) continue;
-                    out.edge_weights[cur_instance*m + i*n + j] = e.weight;
+                    for (int j = i+1; j < nodes_end; ++j) {
+                        if (e.other != nodes[j]) continue;
+                        out.edge_weights[cur_instance*m + i*n + j] = e.weight;
+                        out.edge_weights[cur_instance*m + j*n + i] = e.weight;
+                    }
                 }
             }
 

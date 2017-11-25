@@ -279,6 +279,7 @@ void graph_generate_single(Alarm_stream* stream, jup_str repo, std::ostream* out
             u64 node_i = changed[i] << 32;
             
             for (int j = 0; j < i; ++j) {
+                // This code is pretty hot.
                 u64 node_j = changed[j];
 
                 edges[node_i | node_j] += 1;
