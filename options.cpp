@@ -125,7 +125,7 @@ static void print_usage() {
         "  --batch-size,-n <val> [default: " JUP_STRINGIFY(JUP_DEFAULT_BATCH_SIZE) "]\n"
         "    Number of instances per batch.\n"
         "\n"
-        "  --batch-nodes <val> [default: " JUP_STRINGIFY(JUP_DEFAULT_BATCH_NODES) "]\n"
+        "  --batch-nodes <val> [default: " JUP_STRINGIFY(JUP_DEFAULT_RECF_NODES) "]\n"
         "    Number of nodes per instance.\n"
         "\n"
         "  --gen-graph-nodes <val> [default: " JUP_STRINGIFY(JUP_DEFAULT_GEN_GRAPH_NODES) "]\n"
@@ -140,6 +140,10 @@ static void print_usage() {
         "  --learning-rate-decay,-L <val> [default: 0]\n"
         "    The amount of epochs after which the learning rate is halved. Set to 0 to disable "
             "learning rate decay.\n"
+        "\n"
+        "  --droupout,-d <val> [default: " JUP_STRINGIFY(JUP_DEFAULT_DROPOUT) "]\n"
+        "    The dropout to use for the network, that is the fraction of nodes that is retained "
+            "while training. Set to 1.0 to disable dropout.\n"
         "\n"
         "  --test-frac <val> [default: " JUP_STRINGIFY(JUP_DEFAULT_TEST_FRAC) "]\n"
         "    The fraction of the data set that is used as test data.\n"
@@ -204,7 +208,7 @@ static bool parse_option(Schaf_options* options, Parse_state* state) {
         options->hyp.batch_size = get_int(state, 1);
     } else if (state->current == "--batch-nodes") {
         pop_option_arg(state);
-        options->hyp.batch_nodes = get_int(state, 1);
+        options->hyp.recf_nodes = get_int(state, 1);
     } else if (state->current == "--gen-graph-nodes") {
         pop_option_arg(state);
         options->hyp.gen_graph_nodes = get_int(state, 1);
@@ -214,6 +218,9 @@ static bool parse_option(Schaf_options* options, Parse_state* state) {
     } else if (state->current == "--learning-rate-decay" or state->current == "-L") {
         pop_option_arg(state);
         options->hyp.learning_rate_decay = get_int(state, 0);
+    } else if (state->current == "--dropout" or state->current == "-d") {
+        pop_option_arg(state);
+        options->hyp.dropout = get_float(state, 0.1f, 1.f);
     } else if (state->current == "--test-frac") {
         pop_option_arg(state);
         options->hyp.test_frac = get_float(state, 0.f, 1.0f);

@@ -6,17 +6,21 @@
 namespace jup {
 
 #define JUP_DEFAULT_BATCH_COUNT      256
-#define JUP_DEFAULT_BATCH_SIZE        64
-#define JUP_DEFAULT_BATCH_NODES       16
+#define JUP_DEFAULT_BATCH_SIZE       256
+#define JUP_DEFAULT_RECF_NODES         8
+#define JUP_DEFAULT_RECF_COUNT         8
 #define JUP_DEFAULT_GEN_GRAPH_NODES   32
 #define JUP_DEFAULT_LEARNING_RATE    0.1
 #define JUP_DEFAULT_TEST_FRAC        0.1
+#define JUP_DEFAULT_DROPOUT          0.5
 
 struct Hyperparam {
     int batch_count = JUP_DEFAULT_BATCH_COUNT; // batches per training data
     int batch_size  = JUP_DEFAULT_BATCH_SIZE;  // instances per batch
-    int batch_nodes = JUP_DEFAULT_BATCH_NODES; // nodes per instance
     
+    int recf_nodes = JUP_DEFAULT_RECF_NODES; // nodes per receptive field
+    int recf_count = JUP_DEFAULT_RECF_COUNT; // number of receptive fields
+
     int gen_graph_nodes = JUP_DEFAULT_GEN_GRAPH_NODES; // nodes needed per instance
 
     float learning_rate = (float)JUP_DEFAULT_LEARNING_RATE; // you should know what that means...
@@ -24,14 +28,18 @@ struct Hyperparam {
 
     float test_frac = (float)JUP_DEFAULT_TEST_FRAC; // amount of training data to use as test data
 
-    int a1_size = 64; // size of the output of the first layer
-    int a2_size =  1; // size of the output of the second layer (has to be 1, if it is the last layer)
+    int a1_size = 8; // size of the output of the first convolutional layer
+    
+    int b1_size = 64; // size of the output of the first layer
+    int b2_size =  1; // size of the output of the second layer (has to be 1, if it is the last layer)
+
+    float dropout = (float)JUP_DEFAULT_DROPOUT;
 
     int num_instances() const {
         return batch_count * batch_size;
     }
     int floats_edge_weights() const {
-        return batch_size * batch_nodes * batch_nodes;
+        return batch_size * recf_count * recf_nodes * recf_nodes;
     }
     int floats_results() const {
         return batch_size;
@@ -52,26 +60,35 @@ struct Hyperparam {
         return floats_total() * sizeof(float);
     }
     bool valid() const {
-        return batch_count > 0 and batch_size > 0 and batch_nodes > 0;
+        return batch_count > 0 and batch_size > 0 and recf_nodes > 0;
     }
-    int batch_edges() const {
-        return batch_nodes * batch_nodes;
+    int edges_recf() const {
+        return recf_nodes * recf_nodes;
+    }
+    int edges_instance() const {
+        return edges_recf() * recf_count;
     }
 } __attribute__((__packed__));
-
-inline std::ostream& operator<< (std::ostream& out, Hyperparam hyp) {
-    out << "batch_count: " << hyp.batch_count << ", batch_size: " << hyp.batch_size
-        << ", batch_nodes: " << hyp.batch_nodes << ", gen: " << hyp.gen_graph_nodes;
-    return out;
-}
 
 struct Batch_data {
     Array_view_mut<float> edge_weights;
     Array_view_mut<float> results;
+
+    float& edge(int instance, int recf, int from, int to, Hyperparam hyp) {
+        assert(0 <= instance and instance < hyp.batch_size);
+        assert(0 <= recf and recf < hyp.recf_count);
+        assert(0 <= from and from < hyp.recf_nodes);
+        assert(0 <= to and to < hyp.recf_nodes);
+        return edge_weights[instance*hyp.edges_instance() + recf*hyp.edges_recf()
+            + from*hyp.recf_nodes + to];
+    }
 };
 
 struct Training_data {
-    Hyperparam hyp; // This must be in front!
+    union {
+        Hyperparam hyp; // This must be in front!
+        char _buffer[256];
+    };
     Flat_array64_const<float> batch_data;
 
     static Unique_ptr_free<Training_data> make_unique(Hyperparam hyp);

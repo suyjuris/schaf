@@ -85,7 +85,11 @@ void jup_memmove(T1* into, T2 const& from) {
     assert(into_size == from_size);
     std::memmove(into->begin(), from->begin(), into_size);
 }
-
+template <typename T1>
+void jup_memset(T1* into, int val = 0) {
+    int into_size = reinterpret_cast<char*>(into->end()) - (char*)into->begin();
+    std::memset(into->begin(), val, into_size);
+}
 /**
  * code is one of ?errno, ?jup_errno or ?win (the latter is only supported on the windows platform). The result
  * will be a nicely formatted error message corresponding to the current value of this error code.
