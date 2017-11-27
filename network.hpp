@@ -10,9 +10,10 @@ namespace jup {
 #define JUP_DEFAULT_RECF_NODES         8
 #define JUP_DEFAULT_RECF_COUNT         8
 #define JUP_DEFAULT_GEN_GRAPH_NODES   32
-#define JUP_DEFAULT_LEARNING_RATE    0.1
-#define JUP_DEFAULT_TEST_FRAC        0.1
-#define JUP_DEFAULT_DROPOUT          0.5
+#define JUP_DEFAULT_LEARNING_RATE      0.1
+#define JUP_DEFAULT_TEST_FRAC          0.1
+#define JUP_DEFAULT_DROPOUT            1.0
+#define JUP_DEFAULT_L2REG              0.0
 
 struct Hyperparam {
     int batch_count = JUP_DEFAULT_BATCH_COUNT; // batches per training data
@@ -34,6 +35,7 @@ struct Hyperparam {
     int b2_size =  1; // size of the output of the second layer (has to be 1, if it is the last layer)
 
     float dropout = (float)JUP_DEFAULT_DROPOUT;
+    float l2_reg = (float)JUP_DEFAULT_L2REG;
 
     int num_instances() const {
         return batch_count * batch_size;
@@ -117,6 +119,7 @@ void network_load_data(jup_str data_file, Hyperparam hyp, Unique_ptr_free<Traini
 
 void network_prepare_data(jup_str graph_file, jup_str data_file, Hyperparam hyp);
 void network_train(jup_str data_file);
+void network_test();
 void network_print_data_info(jup_str data_file);
 
 

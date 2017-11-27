@@ -141,9 +141,12 @@ static void print_usage() {
         "    The amount of epochs after which the learning rate is halved. Set to 0 to disable "
             "learning rate decay.\n"
         "\n"
-        "  --droupout,-d <val> [default: " JUP_STRINGIFY(JUP_DEFAULT_DROPOUT) "]\n"
+        "  --dropout,-d <val> [default: " JUP_STRINGIFY(JUP_DEFAULT_DROPOUT) "]\n"
         "    The dropout to use for the network, that is the fraction of nodes that is retained "
             "while training. Set to 1.0 to disable dropout.\n"
+        "\n"
+        "  --l2reg,-2 <val> [default: " JUP_STRINGIFY(JUP_DEFAULT_L2REG) "]\n"
+        "    The regularisation strength as applied to the l2 regularisation. Set to 0.f to disable.\n"
         "\n"
         "  --test-frac <val> [default: " JUP_STRINGIFY(JUP_DEFAULT_TEST_FRAC) "]\n"
         "    The fraction of the data set that is used as test data.\n"
@@ -221,6 +224,9 @@ static bool parse_option(Schaf_options* options, Parse_state* state) {
     } else if (state->current == "--dropout" or state->current == "-d") {
         pop_option_arg(state);
         options->hyp.dropout = get_float(state, 0.1f, 1.f);
+    } else if (state->current == "--l2reg" or state->current == "-2") {
+        pop_option_arg(state);
+        options->hyp.l2_reg = get_float(state, 0.f);
     } else if (state->current == "--test-frac") {
         pop_option_arg(state);
         options->hyp.test_frac = get_float(state, 0.f, 1.0f);

@@ -94,8 +94,9 @@ struct Network_state {
     
     tensorflow::Scope root;
     
-    tensorflow::Operation update_op, save_op, restore_op, decay_op;
-    tensorflow::Output x, y, rate, loss, summary_op, print_op;
+    tensorflow::Operation update_op, save_op, restore_op, decay_op, dropout_on_op, dropout_off_op,
+        print_op;
+    tensorflow::Output x, y, rate, loss, summary_op;
     
     std::vector<tensorflow::Output> params;
 
@@ -160,7 +161,10 @@ Network_state* network_init(Hyperparam hyp) {
     auto b1out = Dropout(root, Tanh(name("b1out"), BiasAdd(root, MatMul(root, b1tmp, b1w), b1b)), drop);
     auto y_out = Tanh(name("y_out"), BiasAdd(root, MatMul(root, b1out, b2w), b2b));
     
-    auto loss = Mul(root, L2Loss(name("loss"), Sub(root, Reshape(root, y_out, {hyp.batch_size}), y)), batch_size_inv);
+    auto loss = Add(name("loss"),
+        Mul(root, L2Loss(root, Sub(root, Reshape(root, y_out, {hyp.batch_size}), y)), batch_size_inv),
+        Mul(root, AddN(root, std::initializer_list<Output> {L2Loss(root, a1w), L2Loss(root, b1w), L2Loss(root, b2w)}), hyp.l2_reg)
+    );
 
     // Update
     std::vector<Output> grad_vars {a1w, a1b, b1w, b1b, b2w, b2b};
@@ -192,11 +196,14 @@ Network_state* network_init(Hyperparam hyp) {
     add_summary( HistogramSummary(root, std::string {"s_b1b"}, b1b)    );
     add_summary( HistogramSummary(root, std::string {"s_b2w"}, b2w)    );
     add_summary( HistogramSummary(root, std::string {"s_b2b"}, b2b)    );
-    auto summary_op = MergeSummary(name("run"), summary_ops);
+    state->summary_op = MergeSummary(name("run"), summary_ops);
 
     // Printing
     auto print = root.NewSubScope("print");
-    auto print_op = Print(print, Const(print, 0, {0}), OutputList {a1w}, Print::Summarize(20));
+    state->print_op = Output {Print(print, Const(print, 0, {0}), OutputList {x, y, a1w, a1b, b1w,
+                b1b, b2w, b2b, a1tmp, a1out, b1tmp, b1out, y_out, a1out.op().input(1), b1out.op().input(1)
+                },
+        Print::Summarize(200))}.op();
     
     // Initialize
     auto init = root.NewSubScope("init");
@@ -211,6 +218,11 @@ Network_state* network_init(Hyperparam hyp) {
     add_init_op( Assign(init, rate, Const<float>(init, global_options.hyp.learning_rate, {})) );
     add_init_op( Assign(init, drop, Const<float>(init, global_options.hyp.dropout, {})) );
     auto init_op = NoOp(init.WithControlDependencies(init_ops).WithOpName("run"));
+
+    // Dropout initialization
+    auto dropout = root.NewSubScope("dropout_set");
+    state->dropout_on_op  = Output { Assign(dropout, drop, Const<float>(dropout, global_options.hyp.dropout, {})) }.op();
+    state->dropout_off_op = Output { Assign(dropout, drop, Const<float>(dropout, 1.f, {})) }.op();
 
     // Learning rate decay
     auto decay = root.NewSubScope("decay");
@@ -287,12 +299,27 @@ Network_state* network_init(Hyperparam hyp) {
     state->rate = rate;
     state->loss = loss;
     
-    state->summary_op = summary_op;
-    state->print_op = print_op;
-
     state->session.Run({}, {}, {init_op}, nullptr);
 
     return state;
+}
+
+static void fill_tensors(Hyperparam hyp, Batch_data const& batch, tensorflow::Tensor* data_x, tensorflow::Tensor* data_y) {
+    using namespace tensorflow;
+    
+    if (data_x->NumElements() == 0) {
+        *data_x = Tensor {DT_FLOAT, {hyp.batch_size, hyp.recf_count, hyp.edges_recf()}};
+    }
+    if (data_y->NumElements() == 0) {
+        *data_y = Tensor {DT_FLOAT, {hyp.batch_size}};
+    }
+    
+    assert(batch.edge_weights.size() == data_x->NumElements());
+    std::memcpy(data_x->flat<float>().data(), batch.edge_weights.data(), batch.edge_weights.size() * sizeof(float));
+
+    
+    assert(batch.results.size() == data_y->NumElements());
+    std::memcpy(data_y->flat<float>().data(), batch.results.data(), batch.results.size() * sizeof(float));
 }
 
 void network_batch(Network_state* state, Batch_data const& data) {
@@ -303,6 +330,8 @@ void network_batch(Network_state* state, Batch_data const& data) {
 
     auto hyp = state->hyp;
 
+    Tensor data_x, data_y;
+    fill_tensors(hyp, data, &data_x, &data_y);
 
     if (hyp.learning_rate_decay
         and state->epoch % hyp.learning_rate_decay == 0
@@ -316,14 +345,6 @@ void network_batch(Network_state* state, Batch_data const& data) {
     }
     
     ++state->step;
-    
-    Tensor data_x {DT_FLOAT, {hyp.batch_size, hyp.recf_count, hyp.edges_recf()}};
-    assert(data.edge_weights.size() == data_x.NumElements());
-    std::memcpy(data_x.flat<float>().data(), data.edge_weights.data(), data.edge_weights.size() * sizeof(float));
-
-    Tensor data_y {DT_FLOAT, {hyp.batch_size}};
-    assert(data.results.size() == data_y.NumElements());
-    std::memcpy(data_y.flat<float>().data(), data.results.data(), data.results.size() * sizeof(float));
     
     std::vector<Tensor> outputs;
     TF_CHECK_OK(state->session.Run(
@@ -357,17 +378,17 @@ float network_validate(Network_state* state, Training_data /*const*/& data_test)
     using namespace tensorflow;
     
     auto hyp = data_test.hyp;
+
+    // Need to turn off dropout during validation
+    TF_CHECK_OK(state->session.Run({}, {}, {state->dropout_off_op}, nullptr));
     
     float loss_sum = 0.f;
-    Tensor data_x {DT_FLOAT, {hyp.batch_size, hyp.recf_count, hyp.edges_recf()}};
-    Tensor data_y {DT_FLOAT, {hyp.batch_size}};
+    Tensor data_x, data_y;
     
     std::vector<Tensor> outputs;
 
     for (int i = 0; i < hyp.batch_count; ++i) {
-        auto data = data_test.batch(i);
-        std::memcpy(data_x.flat<float>().data(), data.edge_weights.data(), data.edge_weights.size() * sizeof(float));
-        std::memcpy(data_y.flat<float>().data(), data.results.data(), data.results.size() * sizeof(float));
+        fill_tensors(hyp, data_test.batch(i), &data_x, &data_y);
         TF_CHECK_OK(state->session.Run(
             {{state->x, data_x}, {state->y, data_y}},
             {state->loss},
@@ -376,23 +397,11 @@ float network_validate(Network_state* state, Training_data /*const*/& data_test)
         ));
         loss_sum += outputs[0].scalar<float>()();
     }
+    
+    TF_CHECK_OK(state->session.Run({}, {}, {state->dropout_on_op}, nullptr));
 
     return loss_sum / hyp.batch_count;
 }
-
-/*struct Tensor_data {
-    Flat_array64<char> name;
-    Flat_array64<int> dims;
-    Flat_array64<float> data;
-};
-
-struct Checkpoint {
-    constexpr static u32 magic = 0xe14a9226;
-    
-    Hyperparam hyp;
-    int iter;
-    Flat_array64_const<Tensor_data> tensors;
-    };*/
 
 void network_save(Network_state* state) {
     using namespace tensorflow;
@@ -404,34 +413,6 @@ void network_save(Network_state* state) {
     assert(global_options.logdir and global_options.iter_save);
         
     TF_CHECK_OK(state->session.Run({}, {}, {state->save_op}, nullptr));
-    
-    /*std::vector<Tensor> outputs;
-    TF_CHECK_OK(state->session.Run({}, state->params, {}, &outputs));
-
-    Buffer buf;
-    
-    int size = sizeof(Checkpoint) + outputs.size() * sizeof(Tensor_data);
-    for (int i = 0; i < outputs.size(); ++i) {
-        size += decltype(Tensor_data{}.name)::extra_space(state->params[i].name().size() + 1);
-        size += decltype(Tensor_data{}.dims)::extra_space(outputs[i].rank());
-        size += decltype(Tensor_data{}.data)::extra_space(outputs[i].size());
-    }
-
-    auto guard = data.reserve_guard(size);
-    auto& checkpoint = data.emplace_back<Checkpoint>();
-    checkpoint.tensors.init(outputs.size(), &buf);
-    
-    for (int i = 0; i < outputs.size(); ++i) {
-        checkpoints[i].name.init(state->params[i].name().size(), &buf);
-        checkpoints[i].dims.init(outputs[i].rank(), &buf);
-        checkpoints[i].data.init(outputs[i].size());
-
-        std::memcpy(checkpoints[i].name.begin(), state->params[i].name().begin(), checkpoints.name.size());
-        for (int j = 0; j < outputs[i].rank(); ++j) {
-            checkpoints[i].dims[j] = outputs[i].dimension(j);
-        }
-        std::memcpy(checkpoints[i].data.begin(), outputs[i].data(), outputs[i].size());
-        }*/
 }
 
 void network_restore(Network_state* state) {
@@ -735,7 +716,8 @@ static void print_hyperparam(Hyperparam hyp) {
          << "  a1_size:             " << hyp.a1_size << '\n'
          << "  b1_size:             " << hyp.b1_size << '\n'
          << "  b2_size:             " << hyp.b2_size << '\n'
-         << "  dropout:             " << hyp.dropout << '\n';
+         << "  dropout:             " << hyp.dropout << '\n'
+         << "  l2_reg:              " << hyp.l2_reg << '\n';
 }
 
 void network_prepare_data(jup_str graph_file, jup_str data_file, Hyperparam hyp) {
@@ -807,9 +789,8 @@ void network_train(jup_str data_file) {
     using namespace tensorflow::ops;
 
     auto hyp = global_options.hyp;
-
     print_hyperparam(hyp);
-    
+
     jout << "Initializing..." << endl;
 
     jout << "  Creating neural network..." << endl;
@@ -890,6 +871,47 @@ void network_print_data_info(jup_str data_file) {
          << "  total bytes:         " << nice_bytes(size_td) << "\n"
          << "  checksum (xxHash64): " << nice_hex(hash_val) << '\n'
          << "  checksum (s.i.):     " << nice_hex(hash_val_oi) << '\n';
+}
+
+void network_test() {
+    using namespace tensorflow;
+    
+    Hyperparam hyp;
+    hyp.batch_count = 1;
+    hyp.batch_size = 2;
+    hyp.recf_nodes = 2;
+    hyp.recf_count = 3;
+    hyp.a1_size = 3;
+    hyp.b1_size = 2;
+    hyp.dropout = 0.5;
+
+    auto data = Training_data::make_unique(hyp);
+    for (float& i: data->batch(0).edge_weights) {
+        i = ((float)global_rng.gen_uni(5) - 2.f) / 2.f;
+    }
+    for (float& i: data->batch(0).results) {
+        i = global_rng.gen_bool() ? -1.f : 1.f;;
+    }
+    
+    auto state = network_init(hyp);
+
+    Tensor data_x, data_y;
+    fill_tensors(hyp, data->batch(0), &data_x, &data_y);
+
+    TF_CHECK_OK(state->session.Run(
+        {{state->x, data_x}, {state->y, data_y}},
+        {},
+        {state->print_op},
+        nullptr
+    ));
+    TF_CHECK_OK(state->session.Run(
+        {{state->x, data_x}, {state->y, data_y}},
+        {},
+        {state->print_op},
+        nullptr
+    ));
+    
+    network_free(state);
 }
 
 /*static void network_run_op(Network_state* state, jup_str name) {
