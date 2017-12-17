@@ -28,7 +28,7 @@ static void stream_min(Alarm_stream* stream, int amount) {
     }
 }
 
-static bool stream_match(Alarm_stream* stream, Buffer_view str) {
+static bool stream_match(Alarm_stream* stream, jup_str str) {
     assert(stream);
 
     Alarm_stream stream2 = *stream;
@@ -45,7 +45,7 @@ static bool stream_match(Alarm_stream* stream, Buffer_view str) {
     }
 }
 
-static void stream_pop(Alarm_stream* stream, Buffer_view str) {
+static void stream_pop(Alarm_stream* stream, jup_str str) {
     assert(stream);
     if (not stream_match(stream, str)) {
         jdbg < "Got " < Repr{{stream->in_data.begin() + stream->in_data_off, str.size()}} < ", expected " < Repr{str} ,0;
@@ -53,10 +53,12 @@ static void stream_pop(Alarm_stream* stream, Buffer_view str) {
     }
 }
 
-Alarm_stream alarm_init(Buffer_view fname) {
+Alarm_stream alarm_init(jup_str fname) {
     Alarm_stream stream;
     stream.in_fd = gzopen(fname.c_str(), "rb");
-    assert_errno(stream.in_fd);
+    if (not stream.in_fd) {
+        die("?errno while trying to open file %s", fname);
+    }
     assert(gzbuffer(stream.in_fd, 512*1024) == 0);
     
     stream.in_data.reserve(Alarm_stream::BUFFER_SIZE_IN);

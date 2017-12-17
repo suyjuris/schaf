@@ -51,6 +51,7 @@ struct Graph_reader_state {
 
 void graph_reader_init(Graph_reader_state* state, jup_str file);
 bool graph_reader_next(Graph_reader_state* state);
+void graph_reader_random(Graph_reader_state* state);
 void graph_reader_reset(Graph_reader_state* state);
 void graph_reader_close(Graph_reader_state* state);
 

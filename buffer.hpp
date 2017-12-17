@@ -472,7 +472,8 @@ public:
 	}
 
 	/**
-	 * Maybe set the trap_alloc() flag and return its value.
+	 * Maybe set the trap_alloc() flag and return its value. Consider using the
+	 * reserver_guard or alloc_guard instead.
 	 */
 	bool trap_alloc(bool value) {
 #ifndef NDEBUG

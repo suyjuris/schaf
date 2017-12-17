@@ -191,6 +191,176 @@ static void calculate_diff(
     }
 }
 
+static void graph_pack(Map_edges_t const& edges, int nodes_size, Buffer* graph_data) {
+    u32 aux_size = edges.size() * 6;
+    graph_data->reserve(aux_size * sizeof(u32));
+    u32* aux1 = (u32*)graph_data->data();
+    u32* aux2 = new u32[aux_size];
+    u32* last_0  = new u32[256] {0};
+    u32* last_1  = new u32[256] {0};
+    u32* last_2  = new u32[256] {0};
+    u32* last_3  = new u32[256] {0};
+
+    if (nodes_size > 0xffff) {
+        {int i = 0;
+        for (auto it: edges) {
+            u32 node_a = (u32)(it.first >> 32);
+            u32 node_b = (u32)(it.first);
+            u32 weight = it.second;
+
+            ++last_0[ node_a        & 0xff];
+            ++last_1[(node_a >>  8) & 0xff];
+            ++last_2[(node_a >> 16) & 0xff];
+            ++last_3[(node_a >> 24) & 0xff];
+            ++last_0[ node_b        & 0xff];
+            ++last_1[(node_b >>  8) & 0xff];
+            ++last_2[(node_b >> 16) & 0xff];
+            ++last_3[(node_b >> 24) & 0xff];
+            aux1[i++] = node_a;
+            aux1[i++] = node_b;
+            aux1[i++] = weight;
+            aux1[i++] = node_b;
+            aux1[i++] = node_a;
+            aux1[i++] = weight;
+        }}
+
+        edges.clear();
+
+        for (int j = 1; j < 256; ++j) {
+            last_0[j] += last_0[j-1];
+            last_1[j] += last_1[j-1];
+            last_2[j] += last_2[j-1];
+            last_3[j] += last_3[j-1];
+        } 
+
+        u32* first_0 = new u32[256];
+        u32* first_1 = new u32[256];
+        u32* first_2 = new u32[256];
+        u32* first_3 = new u32[256];
+
+        first_0[0] = 0; std::memcpy(first_0 + 1, last_0, sizeof(u32)*255);
+        first_1[0] = 0; std::memcpy(first_1 + 1, last_1, sizeof(u32)*255);
+        first_2[0] = 0; std::memcpy(first_2 + 1, last_2, sizeof(u32)*255);
+        first_3[0] = 0; std::memcpy(first_3 + 1, last_3, sizeof(u32)*255);
+
+        radix_pass_lsb<1, 0>(aux1, aux2, aux_size, first_0);
+        radix_pass_lsb<1, 8>(aux2, aux1, aux_size, first_1);  
+        radix_pass_lsb<1,16>(aux1, aux2, aux_size, first_2);  
+        radix_pass_lsb<1,24>(aux2, aux1, aux_size, first_3);
+
+        first_0[0] = 0; std::memcpy(first_0 + 1, last_0, sizeof(u32)*255);
+        first_1[0] = 0; std::memcpy(first_1 + 1, last_1, sizeof(u32)*255);
+        first_2[0] = 0; std::memcpy(first_2 + 1, last_2, sizeof(u32)*255);
+        first_3[0] = 0; std::memcpy(first_3 + 1, last_3, sizeof(u32)*255);
+
+        radix_pass_lsb<0, 0>(aux1, aux2, aux_size, first_0);
+        radix_pass_lsb<0, 8>(aux2, aux1, aux_size, first_1);  
+        radix_pass_lsb<0,16>(aux1, aux2, aux_size, first_2);  
+
+        auto guard = graph_data->reserve_guard(
+            Graph::total_space(repo.size(), nodes_size, aux_size / 6)
+        );
+        Graph& g = graph_data->emplace_back<Graph>();
+
+        g.name.init(&graph_data);
+        for (char c: repo) g.name.push_back(c, &graph_data);
+        g.name.push_back('\0', &graph_data);
+        g.nodes.init((u32)nodes_size + 1, &graph_data);
+        g.edge_data.init(aux_size / 3, &graph_data);
+        assert(g.num_nodes() == (int)nodes_size);
+        assert(g.num_edges() == (int)aux_size / 6);
+
+        static_assert(sizeof(Edge) == sizeof(u64), "Size of an Edge must be same as u64");
+        u32* node_data = (u32*)g.nodes.begin();
+        u32* edge_data = (u32*)g.edge_data.begin();
+
+        radix_pass_lsb_last<0,24>(aux2, edge_data, aux_size, first_3, node_data);
+      
+        node_data[0] = 0;
+        for (u32 i = 1; i < g.nodes_size; ++i) {
+            if (node_data[i] == 0) g.nodes[i] = g.nodes[i-1];
+        }
+ 
+        delete[] first_0;
+        delete[] first_1;
+        delete[] first_2;
+        delete[] first_3;
+    } else {    
+        {int i = 0;
+        for (auto it: edges) {
+            u32 node_a = (u32)(it.first >> 32);
+            u32 node_b = (u32)(it.first);
+            u32 weight = it.second;
+
+            ++last_0[ node_a        & 0xff];
+            ++last_1[(node_a >>  8) & 0xff];
+            ++last_0[ node_b        & 0xff];
+            ++last_1[(node_b >>  8) & 0xff];
+            aux1[i++] = node_a;
+            aux1[i++] = node_b;
+            aux1[i++] = weight;
+            aux1[i++] = node_b;
+            aux1[i++] = node_a;
+            aux1[i++] = weight;
+        }}
+
+        edges.clear();
+
+        for (int j = 1; j < 256; ++j) {
+            last_0[j] += last_0[j-1];
+            last_1[j] += last_1[j-1];
+        } 
+
+        u32* first_0 = new u32[256];
+        u32* first_1 = new u32[256];
+
+        first_0[0] = 0; std::memcpy(first_0 + 1, last_0, sizeof(u32)*255);
+        first_1[0] = 0; std::memcpy(first_1 + 1, last_1, sizeof(u32)*255);
+
+        radix_pass_lsb<1, 0>(aux1, aux2, aux_size, first_0);
+        radix_pass_lsb<1, 8>(aux2, aux1, aux_size, first_1);  
+
+        first_0[0] = 0; std::memcpy(first_0 + 1, last_0, sizeof(u32)*255);
+        first_1[0] = 0; std::memcpy(first_1 + 1, last_1, sizeof(u32)*255);
+
+        radix_pass_lsb<0, 0>(aux1, aux2, aux_size, first_0);
+
+        auto guard = graph_data->reserve_guard(
+            Graph::total_space(repo.size(), nodes_size, aux_size / 6)
+        );
+        Graph& g = graph_data->emplace_back<Graph>();
+
+        g.name.init(&graph_data);
+        for (char c: repo) g.name.push_back(c, &graph_data);
+        g.name.push_back('\0', &graph_data);
+        g.nodes.init((u32)nodes_size + 1, &graph_data);
+        g.edge_data.init(aux_size / 3, &graph_data);
+        assert(g.num_nodes() == (int)nodes_size);
+        assert(g.num_edges() == (int)aux_size / 6);
+
+        static_assert(sizeof(Edge) == sizeof(u64), "Size of an Edge must be same as u64");
+        u32* node_data = (u32*)g.nodes.begin();
+        u32* edge_data = (u32*)g.edge_data.begin();
+
+        radix_pass_lsb_last<0,8>(aux2, edge_data, aux_size, first_1, node_data);
+       
+        node_data[0] = 0;
+        for (u32 i = 1; i < g.nodes_size; ++i) {
+            if (node_data[i] == 0) g.nodes[i] = g.nodes[i-1];
+        }
+ 
+        delete[] first_0;
+        delete[] first_1;
+    }
+
+    // aux1 is managed by the buffer
+    delete[] aux2;
+    delete[] last_0;
+    delete[] last_1;
+    delete[] last_2;
+    delete[] last_3;
+}
+
 void graph_generate_single(Alarm_stream* stream, jup_str repo, std::ostream* out) {
     Map_commits_t commits;
     Map_trees_t trees;
@@ -276,13 +446,13 @@ void graph_generate_single(Alarm_stream* stream, jup_str repo, std::ostream* out
         std::sort(changed.begin(), changed.end());
 
         for (int i = 0; i < changed.size(); ++i) {
-            u64 node_i = changed[i] << 32;
+            //u64 node_i = changed[i] << 32;
             
             for (int j = 0; j < i; ++j) {
                 // This code is pretty hot.
-                u64 node_j = changed[j];
+                //u64 node_j = changed[j];
 
-                edges[node_i | node_j] += 1;
+                //edges[node_i | node_j] += 1;
             }
         }
 
@@ -292,6 +462,8 @@ void graph_generate_single(Alarm_stream* stream, jup_str repo, std::ostream* out
             return;
         }
     }
+
+    *tmp_out << nodes.size() << ' ' << commits.size() << endl;
     
     if ((int)edges.size() < global_options.graph_min_edges) {
         jout << "Info: Skipping graph due to min edge limit of "
@@ -301,7 +473,7 @@ void graph_generate_single(Alarm_stream* stream, jup_str repo, std::ostream* out
 
     float f = (float)(std::clock() - start_t) / (float)CLOCKS_PER_SEC;
     jout << jup_printf("Finished in %.2fs.\n", f);
-    jout << "The graph has " << nodes.size() << " nodes and " << edges.size() << " edges." << endl;
+    jout << "The graph has " << nodes.size() << " nodes and " << edges.size() << " edges." << endl;    
     }
     
     Buffer graph_data;
@@ -310,176 +482,8 @@ void graph_generate_single(Alarm_stream* stream, jup_str repo, std::ostream* out
     auto start_t = std::clock();
     jout << "Packing graph... ";
     jout.flush();
-
-    u32 aux_size = edges.size() * 6;
-    u32* aux1 = new u32[aux_size];
-    u32* aux2 = new u32[aux_size];
-    u32* last_0  = new u32[256] {0};
-    u32* last_1  = new u32[256] {0};
-    u32* last_2  = new u32[256] {0};
-    u32* last_3  = new u32[256] {0};
-
-    if (nodes.size() > 0xffff) {
-        {int i = 0;
-        for (auto it: edges) {
-            u32 node_a = (u32)(it.first >> 32);
-            u32 node_b = (u32)(it.first);
-            u32 weight = it.second;
-
-            ++last_0[ node_a        & 0xff];
-            ++last_1[(node_a >>  8) & 0xff];
-            ++last_2[(node_a >> 16) & 0xff];
-            ++last_3[(node_a >> 24) & 0xff];
-            ++last_0[ node_b        & 0xff];
-            ++last_1[(node_b >>  8) & 0xff];
-            ++last_2[(node_b >> 16) & 0xff];
-            ++last_3[(node_b >> 24) & 0xff];
-            aux1[i++] = node_a;
-            aux1[i++] = node_b;
-            aux1[i++] = weight;
-            aux1[i++] = node_b;
-            aux1[i++] = node_a;
-            aux1[i++] = weight;
-        }}
-
-        edges.clear();
-
-        for (int j = 1; j < 256; ++j) {
-            last_0[j] += last_0[j-1];
-            last_1[j] += last_1[j-1];
-            last_2[j] += last_2[j-1];
-            last_3[j] += last_3[j-1];
-        } 
-
-        u32* first_0 = new u32[256];
-        u32* first_1 = new u32[256];
-        u32* first_2 = new u32[256];
-        u32* first_3 = new u32[256];
-
-        first_0[0] = 0; std::memcpy(first_0 + 1, last_0, sizeof(u32)*255);
-        first_1[0] = 0; std::memcpy(first_1 + 1, last_1, sizeof(u32)*255);
-        first_2[0] = 0; std::memcpy(first_2 + 1, last_2, sizeof(u32)*255);
-        first_3[0] = 0; std::memcpy(first_3 + 1, last_3, sizeof(u32)*255);
-
-        radix_pass_lsb<1, 0>(aux1, aux2, aux_size, first_0);
-        radix_pass_lsb<1, 8>(aux2, aux1, aux_size, first_1);  
-        radix_pass_lsb<1,16>(aux1, aux2, aux_size, first_2);  
-        radix_pass_lsb<1,24>(aux2, aux1, aux_size, first_3);
-
-        first_0[0] = 0; std::memcpy(first_0 + 1, last_0, sizeof(u32)*255);
-        first_1[0] = 0; std::memcpy(first_1 + 1, last_1, sizeof(u32)*255);
-        first_2[0] = 0; std::memcpy(first_2 + 1, last_2, sizeof(u32)*255);
-        first_3[0] = 0; std::memcpy(first_3 + 1, last_3, sizeof(u32)*255);
-
-        radix_pass_lsb<0, 0>(aux1, aux2, aux_size, first_0);
-        radix_pass_lsb<0, 8>(aux2, aux1, aux_size, first_1);  
-        radix_pass_lsb<0,16>(aux1, aux2, aux_size, first_2);  
-
-        graph_data.take(aux1, aux_size);
-        auto guard = graph_data.reserve_guard(
-            Graph::total_space(repo.size(), nodes.size(), aux_size / 6)
-        );
-        graph_data.trap_alloc(true);
-        Graph& g = graph_data.emplace_back<Graph>();
-
-        g.name.init(&graph_data);
-        for (char c: repo) g.name.push_back(c, &graph_data);
-        g.name.push_back('\0', &graph_data);
-        g.nodes.init((u32)nodes.size() + 1, &graph_data);
-        g.edge_data.init(aux_size / 3, &graph_data);
-        assert(g.num_nodes() == (int)nodes.size());
-        assert(g.num_edges() == (int)aux_size / 6);
-
-        static_assert(sizeof(Edge) == sizeof(u64), "Size of an Edge must be same as u64");
-        u32* node_data = (u32*)g.nodes.begin();
-        u32* edge_data = (u32*)g.edge_data.begin();
-
-        radix_pass_lsb_last<0,24>(aux2, edge_data, aux_size, first_3, node_data);
-      
-        node_data[0] = 0;
-        for (u32 i = 1; i < g.nodes.size(); ++i) {
-            if (node_data[i] == 0) g.nodes[i] = g.nodes[i-1];
-        }
- 
-        delete[] first_0;
-        delete[] first_1;
-        delete[] first_2;
-        delete[] first_3;
-    } else {    
-        {int i = 0;
-        for (auto it: edges) {
-            u32 node_a = (u32)(it.first >> 32);
-            u32 node_b = (u32)(it.first);
-            u32 weight = it.second;
-
-            ++last_0[ node_a        & 0xff];
-            ++last_1[(node_a >>  8) & 0xff];
-            ++last_0[ node_b        & 0xff];
-            ++last_1[(node_b >>  8) & 0xff];
-            aux1[i++] = node_a;
-            aux1[i++] = node_b;
-            aux1[i++] = weight;
-            aux1[i++] = node_b;
-            aux1[i++] = node_a;
-            aux1[i++] = weight;
-        }}
-
-        edges.clear();
-
-        for (int j = 1; j < 256; ++j) {
-            last_0[j] += last_0[j-1];
-            last_1[j] += last_1[j-1];
-        } 
-
-        u32* first_0 = new u32[256];
-        u32* first_1 = new u32[256];
-
-        first_0[0] = 0; std::memcpy(first_0 + 1, last_0, sizeof(u32)*255);
-        first_1[0] = 0; std::memcpy(first_1 + 1, last_1, sizeof(u32)*255);
-
-        radix_pass_lsb<1, 0>(aux1, aux2, aux_size, first_0);
-        radix_pass_lsb<1, 8>(aux2, aux1, aux_size, first_1);  
-
-        first_0[0] = 0; std::memcpy(first_0 + 1, last_0, sizeof(u32)*255);
-        first_1[0] = 0; std::memcpy(first_1 + 1, last_1, sizeof(u32)*255);
-
-        radix_pass_lsb<0, 0>(aux1, aux2, aux_size, first_0);
-
-        graph_data.take(aux1, aux_size);
-        auto guard = graph_data.reserve_guard(
-            Graph::total_space(repo.size(), nodes.size(), aux_size / 6)
-        );
-        Graph& g = graph_data.emplace_back<Graph>();
-
-        g.name.init(&graph_data);
-        for (char c: repo) g.name.push_back(c, &graph_data);
-        g.name.push_back('\0', &graph_data);
-        g.nodes.init((u32)nodes.size() + 1, &graph_data);
-        g.edge_data.init(aux_size / 3, &graph_data);
-        assert(g.num_nodes() == (int)nodes.size());
-        assert(g.num_edges() == (int)aux_size / 6);
-
-        static_assert(sizeof(Edge) == sizeof(u64), "Size of an Edge must be same as u64");
-        u32* node_data = (u32*)g.nodes.begin();
-        u32* edge_data = (u32*)g.edge_data.begin();
-
-        radix_pass_lsb_last<0,8>(aux2, edge_data, aux_size, first_1, node_data);
-       
-        node_data[0] = 0;
-        for (u32 i = 1; i < g.nodes.size(); ++i) {
-            if (node_data[i] == 0) g.nodes[i] = g.nodes[i-1];
-        }
- 
-        delete[] first_0;
-        delete[] first_1;
-    }
-
-    // aux1 is now owned by the buffer, this is not a leak
-    delete[] aux2;
-    delete[] last_0;
-    delete[] last_1;
-    delete[] last_2;
-    delete[] last_3;
+    
+    graph_pack(edges, nodes.size(), &graph_data);
 
     {float f = (float)(std::clock() - start_t) / (float)CLOCKS_PER_SEC;
     u32 bytes = (u32)(graph_data.size() / f);
@@ -520,15 +524,15 @@ void graph_generate_single(Alarm_stream* stream, jup_str repo, std::ostream* out
     jout << nice_bytes(bytes) << "/s)\n" << endl;
     
     }
-
-    graph_data.trap_alloc(false);
-    
 }
 
 void graph_exec_jobfile(jup_str file, jup_str output) {
     Buffer jobfile;
     jobfile.read_from_file(file, false, 64*1024*1024);
     jobfile.append0();
+
+    std::ofstream _tmp_out {"out8"};
+    tmp_out = &_tmp_out;
     
     char* p = jobfile.begin();
     
@@ -930,6 +934,83 @@ bool graph_reader_next(Graph_reader_state* state) {
 
     state->data.trap_alloc(true);
     return true;
+}
+
+static double normal_cdf(double x) {
+    return 0.5 * std::erfc(-M_SQRT1_2 * x);
+}
+
+static double normal_cdf_inv(double x) {
+    assert(0.0 < x and x < 1.0);
+
+    // Use symmetry for x > 0.5
+    double fac = 1.0;
+    if (x > 0.5) {
+        x = 1.0 - x;
+        fac = -1.0;
+    }
+
+    // Abramowitz & Stegun, 26.2.23.
+    double t = std::sqrt(-2.0 * std::log(x));
+    double frac = ((0.010328*t + 0.802853)*t + 2.515517) / (((0.001308*t + 0.189269)*t + 1.432788)*t + 1.0);
+    return fac * (frac - t);
+}
+
+static double normal_trunc_cdf_inv(double x, double lower, double upper) {
+    return normal_cdf_inv(x * (normal_cdf(upper) - normal_cdf(lower)) + normal_cdf(lower));
+}
+
+void graph_reader_random(Graph_reader_state* state, Rng* rng) {
+    assert(rng);
+
+    state->data.reset();
+
+    /*
+      These are emprirical results. Commit count is not very precise, but it does not seem to be
+      related to the node count that much.
+
+      commit size:
+        cdf(x) = 1 - 0.75482535 * x**-1.1490515
+        cdf_inv(x) = 0.782874 / (1-x)**0.870283
+      
+      node count:
+        cdf(x) = 1-1/sqrt(1.001+0.0160384*x+6.04831e-06*x**2+9.66738e-10*x**3)
+        cdf_inv(x) = 2565.8616745774*log(1+0.0186871905261577/(1-x)**2)
+        
+      commit count:
+        n: node count
+        a: 0.209583
+        cdf_inv(x) = a * invnormtrunc(x, -cdf(n)/a, (1-cdf(n))/a) + cdf(n)
+     */
+    
+    double d1 = 1.0 - rng->gen_uni_double();
+    double n = std::ceil(2565.8616745774 * log(1.0 + 0.0186871905261577 / (d1*d1)));
+
+    double d2 = 0.209583;
+    double d3 = 1 - 1/sqrt(((9.66738e-10*n + 6.04831e-06)*n + 0.0160384)*n + 1.001);
+    double m = std::ceil(d2 * normal_cdf_trunc_inv(rng->gen_uni_double(), -d3/d2, (1.0-d3)/d2) + d3);
+
+    int num_nodes = (int)n;
+    int num_commits = (int)m;
+    
+    auto& commits = state->data.emplace_back<Flat_array32<int>>();
+    commits.init(num_commits, &state->data);
+    int maxsize = 
+    for (int& i: commits) {
+        // The additional constant ensures that no commit introduces more than 5e6 edges.
+        double d4 = 0.782874 / std::pow(1 - rng->gen_uni_double()*0.999893, 0.870283);
+        i = (int)std::ceil(d4);
+    }
+    
+    Map_edges_t edges;
+    for (int i: commits) {
+        
+    }
+    
+    
+    auto& graph = state->data.get<Graph>(0);
+    state->graph = &graph;
+    
 }
 
 void graph_reader_reset(Graph_reader_state* state) {

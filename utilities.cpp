@@ -76,7 +76,9 @@ jup_str _print_error_msg(jup_str msg) {
 
 // see header
 void die(jup_str msg) {
-    print_trimmed(msg);
+    if (msg) {
+        jerr << "Error: " << _print_error_msg(msg) << '\n';
+    }
     die();
 }
 
@@ -479,16 +481,10 @@ static u16 jup_sto_helper(jup_str str, Number_sci* into, u8 flags = 0) {
         exp_ = 0;
     }
 
-    if (flags & jup_sto::_MAX_LEFT) {
-        if (m != 0) {
-            exp_ -= __builtin_clzll(m);
-            m <<= __builtin_clzll(m);
-        }
-    } else {
-        if (m != 0) {
-            exp_ += __builtin_ctzll(m);
-            m >>= __builtin_ctzll(m);
-        }
+    // Shift mantissa to the right
+    if (m != 0) {
+        exp_ += __builtin_ctzll(m);
+        m >>= __builtin_ctzll(m);
     }
     
     if (flags & jup_sto::_ONLY_INTEGER) {
@@ -507,52 +503,11 @@ static u16 jup_sto_helper(jup_str str, Number_sci* into, u8 flags = 0) {
     return 0;
 }
 
-template <typename T>
-u16 jup_stox_helper_int(jup_str str, T* into, u8 flags) {
-    static_assert(sizeof(T) <= sizeof(u64) and std::is_integral<T>::value);
-    assert(into);
-    assert(flags == 0);
-    
-    Number_sci n;
-    if (auto code = jup_sto_helper(str, &n, flags | jup_sto::_ONLY_INTEGER)) {
-        jup_errno = code;
-        return jup_errno;
-    }
-
-    assert(n.e == 0); // due to the _ONLY_INTEGER flag
-    assert(n.type == Number_sci::NORMAL);
-
-    if (std::is_unsigned<T>::value and n.sign and n.m) {
-        jup_errno = 3;
-        return jup_errno;
-    }
-    if (n.m > (u64)std::numeric_limits<T>::max() + n.sign) {
-        jup_errno = n.sign ? 3 : 4;
-        return jup_errno;
-    }
-
-    *into = n.sign ? (T)-n.m : (T)n.m;
-    jup_errno = 0;
-    return jup_errno;
-}
-
-u16 jup_stox(jup_str str, u8*  into, u8 flags) { return jup_stox_helper_int(str, into, flags); }
-u16 jup_stox(jup_str str, s8*  into, u8 flags) { return jup_stox_helper_int(str, into, flags); }
-u16 jup_stox(jup_str str, u16* into, u8 flags) { return jup_stox_helper_int(str, into, flags); }
-u16 jup_stox(jup_str str, s16* into, u8 flags) { return jup_stox_helper_int(str, into, flags); }
-u16 jup_stox(jup_str str, u32* into, u8 flags) { return jup_stox_helper_int(str, into, flags); }
-u16 jup_stox(jup_str str, s32* into, u8 flags) { return jup_stox_helper_int(str, into, flags); }
-u16 jup_stox(jup_str str, u64* into, u8 flags) { return jup_stox_helper_int(str, into, flags); }
-u16 jup_stox(jup_str str, s64* into, u8 flags) { return jup_stox_helper_int(str, into, flags); }
-
-u16 jup_stox(jup_str str, float* into, u8 flags) {
-    static_assert(std::numeric_limits<float>::is_iec559);
-    assert(into);
-
-    Number_sci n;
-    if (auto code = jup_sto_helper(str, &n, flags | jup_sto::_MAX_LEFT)) {
-        jup_errno = code;
-        return jup_errno;
+u16 number_sci_to_real(Number_sci n, float* into) {
+    // Shift to the left
+    if (n.m != 0) {
+        n.e -=  __builtin_clzll(n.m);
+        n.m <<= __builtin_clzll(n.m);
     }
     
     // We interpret n.m as a real in [0, 2)
@@ -635,26 +590,21 @@ u16 jup_stox(jup_str str, float* into, u8 flags) {
             d |= m_;
             // exponent already 0
         } else {
-            jup_errno = n.e < 0 ? 6 : (n.sign ? 3 : 4);
-            return jup_errno;
+            return n.e < 0 ? 6 : (n.sign ? 3 : 4);
         }
     } else {
         assert(false);
     }
 
     *into = result;
-    jup_errno = 0;
-    return jup_errno;
+    return 0;
 }
 
-u16 jup_stox(jup_str str, double* into, u8 flags) {
-    static_assert(std::numeric_limits<double>::is_iec559);
-    assert(into);
-
-    Number_sci n;
-    if (auto code = jup_sto_helper(str, &n, flags | jup_sto::_MAX_LEFT)) {
-        jup_errno = code;
-        return jup_errno;
+u16 number_sci_to_real(Number_sci n, double* into) {
+    // Shift to the left
+    if (n.m != 0) {
+        n.e -=  __builtin_clzll(n.m);
+        n.m <<= __builtin_clzll(n.m);
     }
     
     // We interpret n.m as a real in [0, 2)
@@ -737,17 +687,70 @@ u16 jup_stox(jup_str str, double* into, u8 flags) {
             d |= m_;
             // exponent already 0
         } else {
-            jup_errno = n.e < 0 ? 6 : (n.sign ? 3 : 4);
-            return jup_errno;
+            return n.e < 0 ? 6 : (n.sign ? 3 : 4);
         }
     } else {
         assert(false);
     }
 
     *into = result;
+    return 0;
+}
+
+template <typename T>
+u16 jup_stox_helper_int(jup_str str, T* into, u8 flags) {
+    static_assert(sizeof(T) <= sizeof(u64) and std::is_integral<T>::value);
+    assert(into);
+    assert(flags == 0);
+    
+    Number_sci n;
+    if (auto code = jup_sto_helper(str, &n, flags | jup_sto::_ONLY_INTEGER)) {
+        jup_errno = code;
+        return jup_errno;
+    }
+
+    assert(n.e == 0); // due to the _ONLY_INTEGER flag
+    assert(n.type == Number_sci::NORMAL);
+
+    if (std::is_unsigned<T>::value and n.sign and n.m) {
+        jup_errno = 3;
+        return jup_errno;
+    }
+    if (n.m > (u64)std::numeric_limits<T>::max() + n.sign) {
+        jup_errno = n.sign ? 3 : 4;
+        return jup_errno;
+    }
+
+    *into = n.sign ? (T)-n.m : (T)n.m;
     jup_errno = 0;
     return jup_errno;
 }
+
+template <typename T>
+u16 jup_stox_helper_real(jup_str str, T* into, u8 flags) {
+    static_assert(std::numeric_limits<T>::is_iec559);
+    assert(into);
+
+    Number_sci n;
+    if (auto code = jup_sto_helper(str, &n, flags)) {
+        jup_errno = code;
+        return jup_errno;
+    }
+    
+    jup_errno = number_sci_to_real(n, into);;
+    return jup_errno;
+}
+
+u16 jup_stox(jup_str str, u8*  into, u8 flags) { return jup_stox_helper_int(str, into, flags); }
+u16 jup_stox(jup_str str, s8*  into, u8 flags) { return jup_stox_helper_int(str, into, flags); }
+u16 jup_stox(jup_str str, u16* into, u8 flags) { return jup_stox_helper_int(str, into, flags); }
+u16 jup_stox(jup_str str, s16* into, u8 flags) { return jup_stox_helper_int(str, into, flags); }
+u16 jup_stox(jup_str str, u32* into, u8 flags) { return jup_stox_helper_int(str, into, flags); }
+u16 jup_stox(jup_str str, s32* into, u8 flags) { return jup_stox_helper_int(str, into, flags); }
+u16 jup_stox(jup_str str, u64* into, u8 flags) { return jup_stox_helper_int(str, into, flags); }
+u16 jup_stox(jup_str str, s64* into, u8 flags) { return jup_stox_helper_int(str, into, flags); }
+u16 jup_stox(jup_str str, float*  into, u8 flags) { return jup_stox_helper_real(str, into, flags); }
+u16 jup_stox(jup_str str, double* into, u8 flags) { return jup_stox_helper_real(str, into, flags); }
 
 // from https://en.wikipedia.org/wiki/Xorshift
 u64 Rng::rand() {
@@ -766,6 +769,20 @@ bool Rng::gen_bool(u8 perbyte) {
 u64 Rng::gen_uni(u64 max) {
     u64 x = rand();
     return x % max;
+}
+
+float Rng::gen_uni_float() {
+    Number_sci n {Number_sci::NORMAL, false, rand(), -64};
+    float result;
+    assert(number_sci_to_real(n, &result) == 0);
+    return result;
+}
+
+double Rng::gen_uni_double() {
+    Number_sci n {Number_sci::NORMAL, false, rand(), -64};
+    double result;
+    assert(number_sci_to_real(n, &result) == 0);
+    return result;
 }
 
 u8 Rng::gen_exp(u8 perbyte) {

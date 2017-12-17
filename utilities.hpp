@@ -202,7 +202,6 @@ namespace jup_sto {
         ALLOW_INFINITY = 1,
         ALLOW_NAN = 2,
         _ONLY_INTEGER = 4,
-        _MAX_LEFT = 8,
     };
 }
 
@@ -285,7 +284,13 @@ struct Rng {
     u8 gen_exp(u8 perbyte);
 
     /**
-     * Generate a random float/double that represents a number.
+     * Generate a uniformly distributed floating point number in [0, 1).
+     */
+    float  gen_uni_float();
+    double gen_uni_double();
+
+    /**
+     * Generate a random float/double that represents a number. Not uniform!
      */
     float  gen_any_float();
     double gen_any_double();
