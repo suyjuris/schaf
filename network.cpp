@@ -147,27 +147,37 @@ Network_state* network_init(Hyperparam hyp) {
 
     auto a1w = Variable(name("a1w"), {hyp.edges_recf(), hyp.a1_size}, DT_FLOAT);
     auto a1b = Variable(name("a1b"), {hyp.a1_size}, DT_FLOAT);
+
+    auto a2w = Variable(name("a2w"), {hyp.a1_size, hyp.a2_size}, DT_FLOAT);
+    auto a2b = Variable(name("a2b"), {hyp.a2_size}, DT_FLOAT);
     
-    auto b1w = Variable(name("b1w"), {hyp.a1_size * hyp.recf_count, hyp.b1_size}, DT_FLOAT);
+    auto b1w = Variable(name("b1w"), {hyp.a2_size * hyp.recf_count, hyp.b1_size}, DT_FLOAT);
     auto b1b = Variable(name("b1b"), {hyp.b1_size}, DT_FLOAT);
     
     auto b2w = Variable(name("b2w"), {hyp.b1_size, hyp.b2_size}, DT_FLOAT);
     auto b2b = Variable(name("b2b"), {hyp.b2_size}, DT_FLOAT);
+    
+    auto b3w = Variable(name("b3w"), {hyp.b2_size, hyp.b3_size}, DT_FLOAT);
+    auto b3b = Variable(name("b3b"), {hyp.b3_size}, DT_FLOAT);
 
     auto a1tmp = Reshape(root, x, {hyp.batch_size * hyp.recf_count, hyp.edges_recf()});
     auto a1out = Dropout(root, Tanh(name("a1out"), BiasAdd(root, MatMul(root, a1tmp, a1w), a1b)), drop);
+    auto a2out = Dropout(root, Tanh(name("a2out"), BiasAdd(root, MatMul(root, a1out, a2w), a2b)), drop);
 
-    auto b1tmp = Reshape(root, a1out, {hyp.batch_size, hyp.recf_count * hyp.a1_size});
+    auto b1tmp = Reshape(root, a2out, {hyp.batch_size, hyp.recf_count * hyp.a2_size});
     auto b1out = Dropout(root, Tanh(name("b1out"), BiasAdd(root, MatMul(root, b1tmp, b1w), b1b)), drop);
-    auto y_out = Tanh(name("y_out"), BiasAdd(root, MatMul(root, b1out, b2w), b2b));
+    auto b2out = Dropout(root, Tanh(name("b2out"), BiasAdd(root, MatMul(root, b1out, b2w), b2b)), drop);
+    auto y_out = Tanh(name("y_out"), BiasAdd(root, MatMul(root, b2out, b3w), b3b));
     
     auto loss = Add(name("loss"),
         Mul(root, L2Loss(root, Sub(root, Reshape(root, y_out, {hyp.batch_size}), y)), batch_size_inv),
-        Mul(root, AddN(root, std::initializer_list<Output> {L2Loss(root, a1w), L2Loss(root, b1w), L2Loss(root, b2w)}), hyp.l2_reg)
+        Mul(root, AddN(root, std::initializer_list<Output> {
+            L2Loss(root, a1w), L2Loss(root, a2w), L2Loss(root, b1w), L2Loss(root, b2w), L2Loss(root, b3w)
+        }), hyp.l2_reg)
     );
 
     // Update
-    std::vector<Output> grad_vars {a1w, a1b, b1w, b1b, b2w, b2b};
+    std::vector<Output> grad_vars {a1w, a1b, a2w, a2b, b1w, b1b, b2w, b2b, b3w, b3b};
     std::vector<Output> grad_outputs;
     TF_CHECK_OK(AddSymbolicGradients(root.NewSubScope("grad"), {loss}, grad_vars, &grad_outputs));
     
@@ -192,27 +202,31 @@ Network_state* network_init(Hyperparam hyp) {
     add_summary( HistogramSummary(root, std::string {"s_yout"}, y_out) );
     add_summary( HistogramSummary(root, std::string {"s_a1w"}, a1w)    );
     add_summary( HistogramSummary(root, std::string {"s_a1b"}, a1b)    );
+    add_summary( HistogramSummary(root, std::string {"s_a2w"}, a2w)    );
+    add_summary( HistogramSummary(root, std::string {"s_a2b"}, a2b)    );
     add_summary( HistogramSummary(root, std::string {"s_b1w"}, b1w)    );
     add_summary( HistogramSummary(root, std::string {"s_b1b"}, b1b)    );
     add_summary( HistogramSummary(root, std::string {"s_b2w"}, b2w)    );
     add_summary( HistogramSummary(root, std::string {"s_b2b"}, b2b)    );
+    add_summary( HistogramSummary(root, std::string {"s_b3w"}, b3w)    );
+    add_summary( HistogramSummary(root, std::string {"s_b3b"}, b3b)    );
     state->summary_op = MergeSummary(name("run"), summary_ops);
 
     // Printing
     auto print = root.NewSubScope("print");
-    state->print_op = Output {Print(print, Const(print, 0, {0}), OutputList {x, y, a1w, a1b, b1w,
-                b1b, b2w, b2b, a1tmp, a1out, b1tmp, b1out, y_out, a1out.op().input(1), b1out.op().input(1)
-                },
-        Print::Summarize(200))}.op();
+    state->print_op = Output {Print(print, Const(print, 0, {0}), OutputList {
+        x, y, a1w, a1b, a2w, a2b, b1w, b1b, b2w, b2b, b3w, b3b, a1tmp, a1out, b1tmp, b1out, y_out,
+        a1out.op().input(1), b1out.op().input(1)
+    }, Print::Summarize(200))}.op();
     
     // Initialize
     auto init = root.NewSubScope("init");
     std::vector<Operation> init_ops;
     auto add_init_op = [&init_ops](Output output) { init_ops.push_back(output.op()); };
-    for (auto i: {a1w, b1w, b2w}) {
+    for (auto i: {a1w, a2w, b1w, b2w, b3w}) {
         add_init_op( Assign(init, i, ParameterizedTruncatedNormal(init, Shape(init, i), 0.f, .05f, -1.f, 1.f)) );
     }
-    for (auto i: {a1b, b1b, b2b}) {
+    for (auto i: {a1b, a2b, b1b, b2b, b3b}) {
         add_init_op( Assign(init, i, Fill(init, Shape(init, i), 0.f)) );
     }
     add_init_op( Assign(init, rate, Const<float>(init, global_options.hyp.learning_rate, {})) );
@@ -230,8 +244,8 @@ Network_state* network_init(Hyperparam hyp) {
 
     // Checkpoints
     auto checkpoint = root.NewSubScope("checkpoint");
-    std::vector<Output> params_op       { rate,   a1w,   a1b,   b1w,   b1b,   b2w,   b2b };
-    std::vector<std::string> params_str {"rate", "a1w", "a1b", "b1w", "b1b", "b2w", "b2b"};
+    std::vector<Output> params_op       { rate,   a1w,   a1b,   a2w,   a2b,   b1w,   b1b,   b2w,   b2b,   b3w,   b3b };
+    std::vector<std::string> params_str {"rate", "a1w", "a1b", "a2w", "a2b", "b1w", "b1b", "b2w", "b2b", "b3w", "b3b"};
 
     Tensor params_name  {DT_STRING, {(int)params_op.size()}}; 
     Tensor params_slice {DT_STRING, {(int)params_op.size()}}; 
@@ -731,8 +745,10 @@ static void print_hyperparam(Hyperparam hyp) {
          << "  learning_rate_decay: " << hyp.learning_rate_decay << '\n'
          << "  test_frac:           " << hyp.test_frac << '\n'
          << "  a1_size:             " << hyp.a1_size << '\n'
+         << "  a2_size:             " << hyp.a2_size << '\n'
          << "  b1_size:             " << hyp.b1_size << '\n'
          << "  b2_size:             " << hyp.b2_size << '\n'
+         << "  b3_size:             " << hyp.b3_size << '\n'
          << "  dropout:             " << hyp.dropout << '\n'
          << "  l2_reg:              " << hyp.l2_reg << '\n';
 }
@@ -895,7 +911,9 @@ void network_random_hyp(Hyperparam* hyp, Rng* rng) {
     hyp->learning_rate = rng->gen_normal(-5.9, 1.0);
     
     hyp->a1_size = rng->choose_uni({4, 8, 16});
+    hyp->a2_size = rng->choose_uni({0, 4, 8});
     hyp->b1_size = rng->choose_uni({32, 64, 128});
+    hyp->b2_size = rng->choose_uni({1, 16, 32});
 
     hyp->dropout = rng->choose_uni({0.5, 0.7, 1.0});
     hyp->l2_reg = rng->choose_uni({0.0, 1e-6, 1e-5});
@@ -917,7 +935,7 @@ void network_grid_search(jup_str data_file) {
     data_test_tmp  = Training_data::make_unique(data_test ->hyp);
 
     jout << '\n';
-    jout << "  loss | trai | iter | batch |  rate  | a1 | b1 | dropout | l2\n";
+    jout << "  loss | trai | iter | batch |  rate  | a1 | a2 | b1 | b2 | dropout | l2\n";
     jout.flush();
 
     double best_loss = 9e9;
@@ -960,16 +978,17 @@ void network_grid_search(jup_str data_file) {
         }
         
         jout << jup_printf(
-            "%5.3f  %5.3f %6d %7d %8.2e %4d %4d  %8.2e %8.2e",
+            "%5.3f  %5.3f %6d %7d %8.2e %4d %4d %4d %4d  %8.2e %8.2e",
             loss_test, loss_train, state->step, hyp_rand.batch_size, (double)hyp_rand.learning_rate,
-            hyp_rand.a1_size, hyp_rand.b1_size, (double)hyp_rand.dropout, (double)hyp_rand.l2_reg
+            hyp_rand.a1_size, hyp_rand.a2_size, hyp_rand.b1_size, hyp_rand.b2_size,
+            (double)hyp_rand.dropout, (double)hyp_rand.l2_reg
         ) << endl;
-        
 
         network_free(state);
     }
 }
 
+/*
 void network_test() {
     using namespace tensorflow;
     
@@ -1011,7 +1030,7 @@ void network_test() {
     network_free(state);
 }
 
-/*static void network_run_op(Network_state* state, jup_str name) {
+static void network_run_op(Network_state* state, jup_str name) {
     using namespace tensorflow;
     using namespace tensorflow::ops;
     

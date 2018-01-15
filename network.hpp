@@ -30,9 +30,11 @@ struct Hyperparam {
     float test_frac = (float)JUP_DEFAULT_TEST_FRAC; // amount of training data to use as test data
 
     int a1_size = 8; // size of the output of the first convolutional layer
+    int a2_size = 8; // size of the output of the second convolutional layer. Set to 0 to disable.
     
     int b1_size = 64; // size of the output of the first layer
     int b2_size =  1; // size of the output of the second layer
+    int b3_size =  1; // size of the output of the third layer (has to be 1, if it is the last layer)
 
     float dropout = (float)JUP_DEFAULT_DROPOUT;
     float l2_reg = (float)JUP_DEFAULT_L2REG;
