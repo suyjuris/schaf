@@ -556,24 +556,32 @@ void network_generate_data(jup_str graph_file, Training_data* data) {
     int cur_instance = 0;
 
     int num_graph = 0;
+    int num_random = 0;
     int num_rewind = 0;
+
+    bool cur_graph_random;
 
     while (cur_batch < data->hyp.batch_count) {
         Batch_data out = data->batch(cur_batch);
         
         if (graph_left == 0) {
-            bool c = graph_reader_next(&state_graph);
-            ++num_graph;
-            if (not c) {
-                jout << "  Rewinding for more data" << endl;
-                graph_reader_reset(&state_graph);
-                c = graph_reader_next(&state_graph);
-                assert(c);
-                ++num_rewind;
+            cur_graph_random = global_rng.gen_bool(256 / 4);
+            if (cur_graph_random) {
+                graph_reader_random(&state_graph, &global_rng);
+                ++num_random;
+            } else {
+                bool c = graph_reader_next(&state_graph);
+                ++num_graph;
+                if (not c) {
+                    jout << "  Rewinding for more data" << endl;
+                    graph_reader_reset(&state_graph);
+                    c = graph_reader_next(&state_graph);
+                    assert(c);
+                    ++num_rewind;
+                }    
             }
                 
             graph_left = state_graph.graph->num_nodes() / data->hyp.gen_graph_nodes;
-            //jdbg < "Loading graph" < state_graph.graph->name.begin() < graph_left ,0;
             if (graph_left == 0) continue;
         }
 
@@ -589,11 +597,12 @@ void network_generate_data(jup_str graph_file, Training_data* data) {
             if (cur_instance == 0) {
                 jup_memset(&out.edge_weights);
             }
+
+            bool do_falsify = not cur_graph_random and global_rng.gen_bool(256 / 3);
             
-            bool is_neg = global_rng.gen_bool();
             for (int cur_recf = 0; cur_recf < data->hyp.recf_count; ++cur_recf) {
                 u32 node = global_rng.gen_uni(state_graph.graph->num_nodes());
-                auto nodes = is_neg ?
+                auto nodes = do_falsify ?
                     neighbours.find<true >(*state_graph.graph, node, data->hyp.recf_nodes):
                     neighbours.find<false>(*state_graph.graph, node, data->hyp.recf_nodes);
 
@@ -606,7 +615,7 @@ void network_generate_data(jup_str graph_file, Training_data* data) {
                     for (Edge e: state_graph.graph->adjacent(nodes[i])) {
                         for (int j = i+1; j < nodes_end; ++j) {
                             if (e.other != nodes[j]) continue;
-                            u32 weight = is_neg ? perturb(nodes[i], nodes[j], e.weight) : e.weight;
+                            u32 weight = do_falsify ? perturb(nodes[i], nodes[j], e.weight) : e.weight;
                             out.edge(cur_instance, cur_recf, i, j, data->hyp) = weight;
                             out.edge(cur_instance, cur_recf, j, i, data->hyp) = weight;
                         }
@@ -615,7 +624,7 @@ void network_generate_data(jup_str graph_file, Training_data* data) {
             }
 
             // Whether to have a positive or a negative example
-            if (is_neg) {
+            if (do_falsify or cur_graph_random) {
                 out.results[cur_instance] = -1.f;
             } else {
                 out.results[cur_instance] = 1.f;
@@ -654,7 +663,8 @@ void network_generate_data(jup_str graph_file, Training_data* data) {
     graph_reader_close(&state_graph);
 
     jout << "Done. (" << timer.total() << ", " << timer.bytes_done(cur_batch * data->hyp.bytes_batch())
-         << ", " << num_graph << " graphs, " << num_rewind << " rewinds)" << endl;
+         << ", " << num_graph << " ordinary graphs, " << num_random << " random graphs, " << num_rewind
+         << " rewinds)" << endl;
 }
 
 void network_shuffle(Training_data const& from, Training_data* into, int offset, bool silent) {
@@ -680,9 +690,13 @@ void network_shuffle(Training_data const& from, Training_data* into, int offset,
     for (int i = 0; i < into->hyp.num_instances(); ++i) {
         int index = rng.gen_uni(left.size());
         int j = left[index];
-        left[index] = left.pop_back();
+        left[index] = left.back();
+        left.pop_back();
 
         // Move instance j into instance i
+        if (j >= from.hyp.num_instances()) {
+            jdbg < j < from.hyp.num_instances() < index ,0;
+        }
         auto j_inst = const_cast<Training_data&>(from).instance(j);
         auto i_inst = into->instance(i);
         jup_memcpy(&i_inst.edge_weights, j_inst.edge_weights);
@@ -711,8 +725,11 @@ static void print_hyperparam(Hyperparam hyp) {
          << "  batch_count:         " << hyp.batch_count << "\n"
          << "  batch_size:          " << hyp.batch_size << "\n"
          << "  recf_nodes:          " << hyp.recf_nodes << "\n"
+         << "  recf_count:          " << hyp.recf_count << "\n"
          << "  gen_graph_nodes:     " << hyp.gen_graph_nodes << "\n"
          << "  learning_rate:       " << hyp.learning_rate << '\n'
+         << "  learning_rate_decay: " << hyp.learning_rate_decay << '\n'
+         << "  test_frac:           " << hyp.test_frac << '\n'
          << "  a1_size:             " << hyp.a1_size << '\n'
          << "  b1_size:             " << hyp.b1_size << '\n'
          << "  b2_size:             " << hyp.b2_size << '\n'
@@ -785,9 +802,6 @@ void network_load_data(
 }
 
 void network_train(jup_str data_file) {
-    using namespace tensorflow;
-    using namespace tensorflow::ops;
-
     auto hyp = global_options.hyp;
     print_hyperparam(hyp);
 
@@ -871,6 +885,89 @@ void network_print_data_info(jup_str data_file) {
          << "  total bytes:         " << nice_bytes(size_td) << "\n"
          << "  checksum (xxHash64): " << nice_hex(hash_val) << '\n'
          << "  checksum (s.i.):     " << nice_hex(hash_val_oi) << '\n';
+}
+
+void network_random_hyp(Hyperparam* hyp, Rng* rng) {
+    int inst_total = hyp->num_instances();
+    hyp->batch_size = rng->choose_uni({64, 128, 256, 512});
+    hyp->batch_count = inst_total / hyp->batch_size;
+    
+    hyp->learning_rate = rng->gen_normal(-5.9, 1.0);
+    
+    hyp->a1_size = rng->choose_uni({4, 8, 16});
+    hyp->b1_size = rng->choose_uni({32, 64, 128});
+
+    hyp->dropout = rng->choose_uni({0.5, 0.7, 1.0});
+    hyp->l2_reg = rng->choose_uni({0.0, 1e-6, 1e-5});
+}
+
+void network_grid_search(jup_str data_file) {
+    auto hyp = global_options.hyp;
+    print_hyperparam(hyp);
+
+    Rng rng {global_rng.rand()};
+    
+    jout << "Initializing..." << endl;
+
+    setenv("TF_CPP_MIN_LOG_LEVEL", "1", 0);
+    
+    Unique_ptr_free<Training_data> data_train, data_test, data_train_tmp, data_test_tmp;
+    network_load_data(data_file, hyp, &data_train, &data_test);
+    data_train_tmp = Training_data::make_unique(data_train->hyp);
+    data_test_tmp  = Training_data::make_unique(data_test ->hyp);
+
+    jout << '\n';
+    jout << "  loss | trai | iter | batch |  rate  | a1 | b1 | dropout | l2\n";
+    jout.flush();
+
+    double best_loss = 9e9;
+    
+    while (true) {
+        Hyperparam hyp_rand = data_train->hyp;
+        network_random_hyp(&hyp_rand, &rng);
+
+        data_train_tmp->hyp = hyp_rand;
+        data_test_tmp ->hyp = hyp_rand;
+        data_test_tmp->hyp.batch_count = data_test->hyp.num_instances() / hyp_rand.batch_size;
+        
+        network_shuffle(*data_train, data_train_tmp.get(), 0, true);
+        network_shuffle(*data_test,  data_test_tmp .get(), 0, true);
+        
+        auto state = network_init(hyp_rand);
+        double start_time = elapsed_time();
+        int cur_batch = 0;
+
+        while (elapsed_time() < start_time + global_options.grid_max_time) {
+            network_batch(state, data_train_tmp->batch(cur_batch));
+            ++cur_batch;
+        
+            if (cur_batch >= data_train_tmp->hyp.batch_count) {
+                network_shuffle(*data_train, data_train_tmp.get(), 0, true);
+                cur_batch = 0;
+                ++state->epoch;
+                state->epoch_start = state->step;
+            }
+        }
+
+        double loss_test  = network_validate(state, *data_test_tmp);
+        double loss_train = state->loss_sum / state->loss_count;
+
+        if (loss_test < best_loss) {
+            best_loss = loss_test;
+            jout << "* ";
+        } else {
+            jout << "  ";
+        }
+        
+        jout << jup_printf(
+            "%5.3f  %5.3f %6d %7d %8.2e %4d %4d  %8.2e %8.2e",
+            loss_test, loss_train, state->step, hyp_rand.batch_size, (double)hyp_rand.learning_rate,
+            hyp_rand.a1_size, hyp_rand.b1_size, (double)hyp_rand.dropout, (double)hyp_rand.l2_reg
+        ) << endl;
+        
+
+        network_free(state);
+    }
 }
 
 void network_test() {

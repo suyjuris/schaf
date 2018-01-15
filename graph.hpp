@@ -2,6 +2,7 @@
 
 #include "array.hpp"
 #include "flat_data.hpp"
+#include "utilities.hpp"
 
 namespace jup {
 
@@ -25,6 +26,10 @@ struct Graph {
     Array_view<Edge> adjacent(u32 node_id) const {
         Edge const* begin = edge_data.begin() + nodes[node_id  ].data_offset;
         Edge const* end   = edge_data.begin() + nodes[node_id+1].data_offset;
+        if (begin > end) {
+            jerr << nodes[node_id  ].data_offset << ' ' << nodes[node_id+1].data_offset;
+            jerr << name.begin() << ' ' << nodes.size() << ' ' << edge_data.size() << ' ' << node_id << '\n';
+        }
         return Array_view<Edge> {begin, narrow<int>(end - begin)};
     }
 
@@ -51,8 +56,12 @@ struct Graph_reader_state {
 
 void graph_reader_init(Graph_reader_state* state, jup_str file);
 bool graph_reader_next(Graph_reader_state* state);
-void graph_reader_random(Graph_reader_state* state);
+void graph_reader_random(Graph_reader_state* state, Rng* rng);
 void graph_reader_reset(Graph_reader_state* state);
 void graph_reader_close(Graph_reader_state* state);
+
+void graph_write_gdf(jup_str file_name, Graph const& graph);
+void graph_dump(jup_str input, jup_str output, int index);
+void graph_dump_random(jup_str output, u64 seed);
 
 } /* end of namespace jup */

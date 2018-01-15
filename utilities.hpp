@@ -263,6 +263,9 @@ struct Rng {
     constexpr static u64 init = 0xd1620b2a7a243d4bull;
     u64 rand_state = init;
 
+    Rng() {}
+    Rng(u64 seed): rand_state{init ^ seed} {}
+
     /**
      * Return a random u64
      */
@@ -284,7 +287,15 @@ struct Rng {
     u8 gen_exp(u8 perbyte);
 
     /**
-     * Generate a uniformly distributed floating point number in [0, 1).
+     * Sample from the normal distribution
+     */
+    double gen_normal(double mean = 0.0, double stddev = 1.0);
+    double gen_normal_cutoff(double mean, double stddev, double lower, double upper);
+
+    /**
+     * Generate a uniformly distributed floating point number in (0, 1), except that the smallest
+     * value has twice the probability. So essentially instead of 0.0 we have the smallest positve
+     * number twice.
      */
     float  gen_uni_float();
     double gen_uni_double();
@@ -295,10 +306,17 @@ struct Rng {
     float  gen_any_float();
     double gen_any_double();
 
+
     /**
      * Generic interface for the gen_any_* functions.
      */
     template <typename T> T gen_any();
+
+    template <typename T>
+    T choose_uni(std::initializer_list<T> arr) {
+        assert(arr.size() > 0);
+        return arr.begin()[gen_uni(arr.size())];
+    }
     
     template <typename T>
     T const* choose_weighted(T const* ptr, int count) {

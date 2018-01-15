@@ -7,6 +7,7 @@ import sys
 
 if not 3 <= len(sys.argv) <= 4:
     print('Usage:\n  %s <input> <output> [<column>]\n\nSplits <input> at spaces, takes the specified column (starting with 0) and writes percentiles to <output>.' % sys.argv[0])
+    sys.exit(2)
 
 f_inp = sys.argv[1]
 f_out = sys.argv[2]

@@ -113,6 +113,18 @@ static void print_usage() {
         "    Reads the training data from the file <input> and prints information about it to the "
             "console.\n"
         "\n"
+        "  dump_graph <input> <output> [index]\n"
+        "    Takes a graph from <input> with index <index> and writes a gdf file (as used in "
+            "GUESS) describing it. That file can then be displayed by graph-visualisation tools. If "
+            "<index> is omitted, the first graph is taken.\n"
+        "\n"
+        "  dump_graph_random <output> [seed]\n"
+        "    Randomly generates a graph and writes a gdf file (see dump_graph) describing it. If "
+            "<seed> is omitted, 0 is used.\n"
+        "\n"
+        "  grid_search <input>\n"
+        "    Randomly generates sets of hyperparameters and optimises them for some time. The "
+            "results are printed.\n"
         "Options:\n"
         "  --edges-min,-e <val>  [default: none]\n"
         "  --edges-max,-E <val>  [default: none]\n"
@@ -172,6 +184,10 @@ static void print_usage() {
         "    The location to write the summary logfiles (for tensorboard) and the parameter values "
             "to. The directory will be created, if necessary. If this is the empty string, both "
             "logging and saving of parameters are disabled.\n"
+        "\n"
+        "  --grid-max-time,-T <value> [default: " JUP_STRINGIFY(JUP_DEFAULT_GRID_MAX_TIME) "]\n"
+        "    The amount of time a chosen set of hyperparameters (during grid search) is allowed to"
+            "optimise, before being terminated.\n"
         "\n"
         "  --help,-h\n"
         "    Prints this message.\n"
@@ -245,6 +261,9 @@ static bool parse_option(Schaf_options* options, Parse_state* state) {
     } else if (state->current == "--logdir") {
         pop_option_arg(state);
         options->logdir = state->current;
+    } else if (state->current == "--grid-max-time" or state->current == "-T") {
+        pop_option_arg(state);
+        options->grid_max_time = get_float(state, 0.f);
     } else if (state->current == "--") {
         if (not pop(state)) {
             parse_die(state, "Unexpected end of input, expected a mode.");
@@ -313,9 +332,40 @@ void options_execute(Schaf_options* options, Array_view<jup_str> args) {
         }
         jup_str input = state.current;
         network_print_data_info(input);
+    } else if (state.current == "dump_graph") {
+        if (not pop(&state)) {
+            parse_die(&state, "Expected the <input> argument to mode dump_graph.");
+        }
+        jup_str input = state.current;
+        if (not pop(&state)) {
+            parse_die(&state, "Expected the <output> argument to mode dump_graph.");
+        }
+        jup_str output = state.current;
+        int index = 0;
+        if (pop(&state)) {
+            index = get_int(&state, 0);
+        }
+        graph_dump(input, output, index);
+    } else if (state.current == "dump_graph_random") {
+        if (not pop(&state)) {
+            parse_die(&state, "Expected the <output> argument to mode dump_graph_random.");
+        }
+        jup_str output = state.current;
+        u64 seed = 0;
+        if (pop(&state)) {
+            seed = (u64)get_int(&state);
+        }
+        graph_dump_random(output, seed);
+    } else if (state.current == "grid_search") {
+        if (not pop(&state)) {
+            parse_die(&state, "Expected the <input> argument to mode grid_search.");
+        }
+        jup_str input = state.current;
+        network_grid_search(input);
     } else {
         auto s = jup_printf(
-            "Unknown mode. Expected write_graph, print_stats, prepare_data, train or print_data_info, got %s",
+            "Unknown mode. Expected write_graph, print_stats, prepare_data, train, print_data_info,"
+            "dump_graph or dump_graph_random, got %s",
             state.current
         );
         parse_die(&state, s);

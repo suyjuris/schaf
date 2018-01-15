@@ -191,7 +191,7 @@ static void calculate_diff(
     }
 }
 
-static void graph_pack(Map_edges_t const& edges, int nodes_size, Buffer* graph_data) {
+static void graph_pack(Map_edges_t const& edges, int nodes_size, jup_str repo, Buffer* graph_data) {
     u32 aux_size = edges.size() * 6;
     graph_data->reserve(aux_size * sizeof(u32));
     u32* aux1 = (u32*)graph_data->data();
@@ -223,8 +223,6 @@ static void graph_pack(Map_edges_t const& edges, int nodes_size, Buffer* graph_d
             aux1[i++] = node_a;
             aux1[i++] = weight;
         }}
-
-        edges.clear();
 
         for (int j = 1; j < 256; ++j) {
             last_0[j] += last_0[j-1];
@@ -260,13 +258,14 @@ static void graph_pack(Map_edges_t const& edges, int nodes_size, Buffer* graph_d
         auto guard = graph_data->reserve_guard(
             Graph::total_space(repo.size(), nodes_size, aux_size / 6)
         );
+        assert(graph_data->size() == 0);
         Graph& g = graph_data->emplace_back<Graph>();
 
-        g.name.init(&graph_data);
-        for (char c: repo) g.name.push_back(c, &graph_data);
-        g.name.push_back('\0', &graph_data);
-        g.nodes.init((u32)nodes_size + 1, &graph_data);
-        g.edge_data.init(aux_size / 3, &graph_data);
+        g.name.init(graph_data);
+        for (char c: repo) g.name.push_back(c, graph_data);
+        g.name.push_back('\0', graph_data);
+        g.nodes.init((u32)nodes_size + 1, graph_data);
+        g.edge_data.init(aux_size / 3, graph_data);
         assert(g.num_nodes() == (int)nodes_size);
         assert(g.num_edges() == (int)aux_size / 6);
 
@@ -277,7 +276,7 @@ static void graph_pack(Map_edges_t const& edges, int nodes_size, Buffer* graph_d
         radix_pass_lsb_last<0,24>(aux2, edge_data, aux_size, first_3, node_data);
       
         node_data[0] = 0;
-        for (u32 i = 1; i < g.nodes_size; ++i) {
+        for (u32 i = 1; (int)i <= nodes_size; ++i) {
             if (node_data[i] == 0) g.nodes[i] = g.nodes[i-1];
         }
  
@@ -304,8 +303,6 @@ static void graph_pack(Map_edges_t const& edges, int nodes_size, Buffer* graph_d
             aux1[i++] = weight;
         }}
 
-        edges.clear();
-
         for (int j = 1; j < 256; ++j) {
             last_0[j] += last_0[j-1];
             last_1[j] += last_1[j-1];
@@ -330,11 +327,11 @@ static void graph_pack(Map_edges_t const& edges, int nodes_size, Buffer* graph_d
         );
         Graph& g = graph_data->emplace_back<Graph>();
 
-        g.name.init(&graph_data);
-        for (char c: repo) g.name.push_back(c, &graph_data);
-        g.name.push_back('\0', &graph_data);
-        g.nodes.init((u32)nodes_size + 1, &graph_data);
-        g.edge_data.init(aux_size / 3, &graph_data);
+        g.name.init(graph_data);
+        for (char c: repo) g.name.push_back(c, graph_data);
+        g.name.push_back('\0', graph_data);
+        g.nodes.init((u32)nodes_size + 1, graph_data);
+        g.edge_data.init(aux_size / 3, graph_data);
         assert(g.num_nodes() == (int)nodes_size);
         assert(g.num_edges() == (int)aux_size / 6);
 
@@ -345,7 +342,7 @@ static void graph_pack(Map_edges_t const& edges, int nodes_size, Buffer* graph_d
         radix_pass_lsb_last<0,8>(aux2, edge_data, aux_size, first_1, node_data);
        
         node_data[0] = 0;
-        for (u32 i = 1; i < g.nodes_size; ++i) {
+        for (u32 i = 1; (int)i <= nodes_size; ++i) {
             if (node_data[i] == 0) g.nodes[i] = g.nodes[i-1];
         }
  
@@ -446,13 +443,13 @@ void graph_generate_single(Alarm_stream* stream, jup_str repo, std::ostream* out
         std::sort(changed.begin(), changed.end());
 
         for (int i = 0; i < changed.size(); ++i) {
-            //u64 node_i = changed[i] << 32;
+            u64 node_i = changed[i] << 32;
             
             for (int j = 0; j < i; ++j) {
                 // This code is pretty hot.
-                //u64 node_j = changed[j];
+                u64 node_j = changed[j];
 
-                //edges[node_i | node_j] += 1;
+                edges[node_i | node_j] += 1;
             }
         }
 
@@ -463,8 +460,6 @@ void graph_generate_single(Alarm_stream* stream, jup_str repo, std::ostream* out
         }
     }
 
-    *tmp_out << nodes.size() << ' ' << commits.size() << endl;
-    
     if ((int)edges.size() < global_options.graph_min_edges) {
         jout << "Info: Skipping graph due to min edge limit of "
              << global_options.graph_min_edges << " edges.\n" << endl;
@@ -483,7 +478,7 @@ void graph_generate_single(Alarm_stream* stream, jup_str repo, std::ostream* out
     jout << "Packing graph... ";
     jout.flush();
     
-    graph_pack(edges, nodes.size(), &graph_data);
+    graph_pack(edges, nodes.size(), repo, &graph_data);
 
     {float f = (float)(std::clock() - start_t) / (float)CLOCKS_PER_SEC;
     u32 bytes = (u32)(graph_data.size() / f);
@@ -531,9 +526,6 @@ void graph_exec_jobfile(jup_str file, jup_str output) {
     jobfile.read_from_file(file, false, 64*1024*1024);
     jobfile.append0();
 
-    std::ofstream _tmp_out {"out8"};
-    tmp_out = &_tmp_out;
-    
     char* p = jobfile.begin();
     
     auto consume = [&jobfile, &p](jup_str str) {
@@ -970,47 +962,72 @@ void graph_reader_random(Graph_reader_state* state, Rng* rng) {
       related to the node count that much.
 
       commit size:
-        cdf(x) = 1 - 0.75482535 * x**-1.1490515
-        cdf_inv(x) = 0.782874 / (1-x)**0.870283
+        cdf1(x) = 1 - 0.75482535 * x**-1.1490515
+        cdf_inv1(x) = 0.782874 / (1-x)**0.870283
       
       node count:
-        cdf(x) = 1-1/sqrt(1.001+0.0160384*x+6.04831e-06*x**2+9.66738e-10*x**3)
-        cdf_inv(x) = 2565.8616745774*log(1+0.0186871905261577/(1-x)**2)
+        cdf2(x) = 1-1/sqrt(1.001+0.0160384*x+6.04831e-06*x**2+9.66738e-10*x**3)
+        cdf_inv2(x) = 2565.8616745774*log(1+0.0186871905261577/(1-x)**2)
         
       commit count:
         n: node count
-        a: 0.209583
-        cdf_inv(x) = a * invnormtrunc(x, -cdf(n)/a, (1-cdf(n))/a) + cdf(n)
+        a = 0.209583
+        f(x) = 582.189712734868*((1-x)**0.780733999863337 - 1)
+        cdf_inv(x) = f(a * invnormtrunc(x, -cdf2(n)/a, (1-cdf2(n))/a) + cdf2(n))
      */
     
     double d1 = 1.0 - rng->gen_uni_double();
     double n = std::ceil(2565.8616745774 * log(1.0 + 0.0186871905261577 / (d1*d1)));
+    n = 100.0;
 
     double d2 = 0.209583;
     double d3 = 1 - 1/sqrt(((9.66738e-10*n + 6.04831e-06)*n + 0.0160384)*n + 1.001);
-    double m = std::ceil(d2 * normal_cdf_trunc_inv(rng->gen_uni_double(), -d3/d2, (1.0-d3)/d2) + d3);
+    double d5 = d2 * normal_trunc_cdf_inv(rng->gen_uni_double(), -d3/d2, (1.0-d3)/d2) + d3;
+    double m = std::ceil(582.189712734868*(std::pow(1-d5, -0.780733999863337) - 1.0));
 
     int num_nodes = (int)n;
     int num_commits = (int)m;
     
     auto& commits = state->data.emplace_back<Flat_array32<int>>();
     commits.init(num_commits, &state->data);
-    int maxsize = 
-    for (int& i: commits) {
+    
+    Map_edges_t edges;
+    hash_map_init(&edges, 0); // 0 is fine, because the edge (0, 0) can not exist
+    
+    Array<u64> changed;
+    for (int i: commits) {
         // The additional constant ensures that no commit introduces more than 5e6 edges.
         double d4 = 0.782874 / std::pow(1 - rng->gen_uni_double()*0.999893, 0.870283);
         i = (int)std::ceil(d4);
+
+        changed.resize(i);
+        for (u64& j: changed) {
+            j = rng->gen_uni(num_nodes);
+        }
+        std::sort(changed.begin(), changed.end());
+        {int k = 0;
+        for (int j = 1; j < changed.size(); ++j) {
+            if (changed[j] != changed[k]) {
+                changed[++k] = changed[j];
+            }
+        }
+        changed.resize(k+1);}
+
+        for (int i = 0; i < changed.size(); ++i) {
+            u64 node_i = changed[i] << 32;
+            
+            for (int j = 0; j < i; ++j) {
+                // This code is pretty hot.
+                u64 node_j = changed[j];
+
+                edges[node_i | node_j] += 1;
+            }
+        }
     }
-    
-    Map_edges_t edges;
-    for (int i: commits) {
-        
-    }
-    
-    
-    auto& graph = state->data.get<Graph>(0);
-    state->graph = &graph;
-    
+
+    state->data.reset();
+    graph_pack(edges, num_nodes, "<randomly generated>", &state->data);
+    state->graph = &state->data.get<Graph>(0);
 }
 
 void graph_reader_reset(Graph_reader_state* state) {
@@ -1027,5 +1044,46 @@ void graph_reader_close(Graph_reader_state* state) {
     state->input.close();
     state->graph = nullptr;
 }
+
+void graph_write_gdf(jup_str file_name, Graph const& graph) {
+    std::ofstream o {file_name.c_str()};
+
+    o << "nodedef>name VARCHAR\n";
+    for (u32 i = 0; i < (u32)graph.num_nodes(); ++i) {
+        o << i << '\n';
+    }
+
+    o << "edgedef>node1 VARCHAR,node2 VARCHAR,weight DOUBLE\n";
+    for (u32 i = 0; i < (u32)graph.num_nodes(); ++i) {
+        for (Edge e: graph.adjacent(i)) {
+            if (i < e.other) {
+                o << i << ',' << e.other << ',' << e.weight << '\n';
+            }
+        }
+    }
+}
+
+void graph_dump(jup_str input, jup_str output, int index) {
+    Graph_reader_state state;
+    jout << "Opening file " << input << '\n';
+    graph_reader_init(&state, input);
+    for (int i = 0; i <= index; ++i) {
+        bool flag = graph_reader_next(&state);
+        if (not flag) {
+            die("Not enough graphs in file %s (need at least %d, got %d)", output, index+1, i);
+        }
+    }
+    graph_write_gdf(output, *state.graph);
+    jout << "Written graph " << state.graph->name.begin() << " to " << output << '\n';
+    graph_reader_close(&state);
+}
+
+void graph_dump_random(jup_str output, u64 seed) {
+    Graph_reader_state state;
+    Rng rng {seed};
+    graph_reader_random(&state, &rng);
+    graph_write_gdf(output, *state.graph);
+}
+
 
 } /* end of namespace jup */

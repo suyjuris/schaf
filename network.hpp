@@ -32,7 +32,7 @@ struct Hyperparam {
     int a1_size = 8; // size of the output of the first convolutional layer
     
     int b1_size = 64; // size of the output of the first layer
-    int b2_size =  1; // size of the output of the second layer (has to be 1, if it is the last layer)
+    int b2_size =  1; // size of the output of the second layer
 
     float dropout = (float)JUP_DEFAULT_DROPOUT;
     float l2_reg = (float)JUP_DEFAULT_L2REG;
@@ -121,6 +121,6 @@ void network_prepare_data(jup_str graph_file, jup_str data_file, Hyperparam hyp)
 void network_train(jup_str data_file);
 void network_test();
 void network_print_data_info(jup_str data_file);
-
+void network_grid_search(jup_str data_file);
 
 } /* end of namespace jup */

@@ -773,15 +773,28 @@ u64 Rng::gen_uni(u64 max) {
 
 float Rng::gen_uni_float() {
     Number_sci n {Number_sci::NORMAL, false, rand(), -64};
-    float result;
+    union {
+        float result;
+        u64 result_d;
+    };
     assert(number_sci_to_real(n, &result) == 0);
+
+    // Change 0.0 to smallest denormalised float
+    result_d += not result_d;
     return result;
 }
 
 double Rng::gen_uni_double() {
     Number_sci n {Number_sci::NORMAL, false, rand(), -64};
-    double result;
+    union {
+        double result;
+        u64 result_d;
+    };
     assert(number_sci_to_real(n, &result) == 0);
+
+    // Change 0.0 to smallest denormalised double
+    result_d += not result_d;
+    
     return result;
 }
 
@@ -796,6 +809,34 @@ u8 Rng::gen_exp(u8 perbyte) {
         y = (y * perbyte) >> 8;
     }
     return i;
+}
+
+static double normal_cdf(double x) {
+    return 0.5 * std::erfc(-M_SQRT1_2 * x);
+}
+
+static double normal_cdf_inv(double x) {
+    assert(0.0 < x and x < 1.0);
+
+    // Use symmetry for x > 0.5
+    double fac = 1.0;
+    if (x > 0.5) {
+        x = 1.0 - x;
+        fac = -1.0;
+    }
+
+    // Abramowitz & Stegun, 26.2.23.
+    double t = std::sqrt(-2.0 * std::log(x));
+    double frac = ((0.010328*t + 0.802853)*t + 2.515517) / (((0.001308*t + 0.189269)*t + 1.432788)*t + 1.0);
+    return fac * (frac - t);
+}
+
+double Rng::gen_normal(double mean, double stddev) {
+    return normal_cdf_inv(gen_uni_double()) * stddev + mean;
+}
+
+double Rng::gen_normal_cutoff(double mean, double stddev, double lower, double upper) {
+    return normal_cdf_inv(gen_uni_double() * (normal_cdf(upper) - normal_cdf(lower)) + normal_cdf(lower));
 }
 
 float Rng::gen_any_float() {

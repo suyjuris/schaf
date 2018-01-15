@@ -33,7 +33,11 @@
     - LZ4 source repository : https://github.com/lz4/lz4
 */
 
-// NOTE(suyjuris): changed size_t into std::size_t, included cstddef instead of stddef.h
+// NOTE(suyjuris): changed size_t into std::size_t, included cstddef instead of stddef.h, moved the
+// include outside of extern "C".
+
+/* --- Dependency --- */
+#include <cstddef>   /* size_t */
 
 #if defined (__cplusplus)
 extern "C" {
@@ -41,9 +45,6 @@ extern "C" {
 
 #ifndef LZ4_H_2983827168210
 #define LZ4_H_2983827168210
-
-/* --- Dependency --- */
-#include <cstddef>   /* size_t */
 
 
 /**

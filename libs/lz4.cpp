@@ -32,6 +32,10 @@
     - LZ4 source repository : https://github.com/lz4/lz4
 */
 
+// NOTE(suyjuris): Ignored some warnings
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wregister"
+
 
 /*-************************************
 *  Tuning parameters
@@ -1472,3 +1476,6 @@ int LZ4_decompress_fast_withPrefix64k(const char* source, char* dest, int origin
 }
 
 #endif   /* LZ4_COMMONDEFS_ONLY */
+
+// NOTE(suyjuris): End of ignored warnings
+#pragma GCC diagnostic pop
