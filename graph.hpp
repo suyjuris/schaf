@@ -39,6 +39,10 @@ struct Graph {
             + decltype(nodes)::extra_space(num_nodes + 1)
             + decltype(edge_data)::extra_space(num_edges * 2);
     }
+
+    jup_str get_name() const {
+        return {name.begin(), narrow<int>(name.size() - 1)};
+    }
 };
 
 void graph_exec_jobfile(jup_str file, jup_str output);

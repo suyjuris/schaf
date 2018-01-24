@@ -978,7 +978,6 @@ void graph_reader_random(Graph_reader_state* state, Rng* rng) {
     
     double d1 = 1.0 - rng->gen_uni_double();
     double n = std::ceil(2565.8616745774 * log(1.0 + 0.0186871905261577 / (d1*d1)));
-    n = 100.0;
 
     double d2 = 0.209583;
     double d3 = 1 - 1/sqrt(((9.66738e-10*n + 6.04831e-06)*n + 0.0160384)*n + 1.001);
@@ -987,7 +986,8 @@ void graph_reader_random(Graph_reader_state* state, Rng* rng) {
 
     int num_nodes = (int)n;
     int num_commits = (int)m;
-    
+
+    state->data.reserve_space(Flat_array32<int>::total_space(num_commits));
     auto& commits = state->data.emplace_back<Flat_array32<int>>();
     commits.init(num_commits, &state->data);
     

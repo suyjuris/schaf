@@ -9,22 +9,19 @@ else
   MODE = LINUX
 endif
 
-TARGET = schaf
-
-LIBS = -lz
-ifeq ($(MODE),WINDOWS)
-  LIBS += -lWs2_32 -lversion -static-libstdc++ -static-libgcc
-endif
-
-ifndef CXX
-  CXX = g++
-endif
-
+TARGET   = schaf
+CXX      = g++
 CXXFLAGS = -g -Wall -Werror -pedantic -fmax-errors=2
 CPPFLAGS = -std=c++1z -DJUP_OS=$(MODE) -DJUP_OS_$(MODE) -Ibuild_files/include_linux
-LDFLAGS  = -Wall -ltensorflow_cc -ltensorflow_framework -lstdc++fs
+LDFLAGS  = -Wall
+LIBS     = -lz -ltensorflow_cc -ltensorflow_framework -lstdc++fs
 
-ifdef SCHAF_FAST
+# Put your custom configuration in there
+make.config:
+	echo '# Custom build configuration in here' > $@
+-include make.config
+
+ifeq ($(SCHAF_FAST),1)
   CXXFLAGS += -O3 -march=native
   CPPFLAGS += -DNDEBUG
 else
@@ -32,14 +29,24 @@ else
 endif
 
 ifeq ($(MODE),WINDOWS)
+  LIBS += -lWs2_32 -lversion -static-libstdc++ -static-libgcc
+else
+  LDFLAGS += -rdynamic
+endif
+
+ifeq ($(USE_PROFILER),1)
+  LIBS += -lprofiler
+  CPPFLAGS += -DJUP_USE_PROFILER
+endif
+
+ifeq ($(MODE),WINDOWS)
   EXEEXT = .exe
   CV2PDB = cv2pdb
 else
-  LDFLAGS += -rdynamic
   EXEEXT =
 endif
 
-ifdef SCHAF_FAST
+ifeq ($(SCHAF_FAST),1)
   SUFFIX = _fast
 else
   SUFFIX =
@@ -57,6 +64,7 @@ endif
 
 .PHONY: default all clean print_config init distclean
 .SUFFIXES:
+.DEFAULT_GOAL := default
 
 all: default
 

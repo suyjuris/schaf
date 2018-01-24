@@ -1,8 +1,10 @@
 
+#ifdef JUP_USE_PROFILER
+#include <gperftools/profiler.h>
+#endif
+
 #include "utilities.hpp"
 #include "system.hpp"
-
-#include "debug.hpp"
 
 namespace jup {
 
@@ -247,9 +249,9 @@ jup_str jup_err_messages[] = {
     /* 2 */ "Invalid character",
     /* 3 */ "Out of range (too low)",
     /* 4 */ "Out of range (too high)",
-    /* 5 */ "Unexpected end of input"
-    /* 6 */ "Value too close to zero"
-    /* 7 */ "Extra characters"
+    /* 5 */ "Unexpected end of input",
+    /* 6 */ "Value too close to zero",
+    /* 7 */ "Extra characters",
     /* 8 */ "Expected an integer"
     /* KEEP THE SIZE UPDATED! */
 };
@@ -267,8 +269,6 @@ struct Number_sci {
     u64 m; // mantissa
     int e; // exponent
 };
-
-__jup_dbg(Number_sci, type, sign, m, e)
 
 /**
  * Converts a string into a number. This function returns imprecise results!
@@ -836,7 +836,9 @@ double Rng::gen_normal(double mean, double stddev) {
 }
 
 double Rng::gen_normal_cutoff(double mean, double stddev, double lower, double upper) {
-    return normal_cdf_inv(gen_uni_double() * (normal_cdf(upper) - normal_cdf(lower)) + normal_cdf(lower));
+    double lower_p = normal_cdf((lower - mean) / stddev);
+    double upper_p = normal_cdf((upper - mean) / stddev);
+    return normal_cdf_inv(gen_uni_double() * (upper_p - lower_p) + lower_p) * stddev + mean;
 }
 
 float Rng::gen_any_float() {
@@ -867,10 +869,10 @@ double Rng::gen_any_double() {
 
 Rng global_rng;
 
-void load_bytes_object(jup_str path, char* into, int obj_size, int extra_bytes) {
-    assert((s64)obj_size + (s64)extra_bytes <= (s64)std::numeric_limits<int>::max());
+void load_bytes_object(jup_str path, char* into, s64 obj_size, s64 extra_bytes) {
+    assert((u64)obj_size + (u64)std::max(extra_bytes, (s64)0) <= (u64)std::numeric_limits<s64>::max());
     assert(extra_bytes >= -1);
-    
+
     std::ifstream i;
     i.open(path.c_str(), std::ios::ate | std::ios::binary);
     if (not i.good()) {
@@ -896,13 +898,13 @@ void load_bytes_object(jup_str path, char* into, int obj_size, int extra_bytes) 
     if (not i.good()) {
         die("?errno while trying to open file %s", path);
     }
-    i.read(into, obj_size + std::max(extra_bytes, 0));
+    i.read(into, obj_size + std::max(extra_bytes, (s64)0));
     if (not i.good()) {
         die("?errno while trying to open file %s", path);
     }
 }
 
-void load_bytes_buffer(jup_str path, Buffer* into, int maxsize) {
+void load_bytes_buffer(jup_str path, Buffer* into, s64 maxsize) {
     assert(maxsize >= -1);
     
     std::ifstream i;
@@ -991,6 +993,15 @@ jup_str Timer::counter(u64 have) {
 jup_str Timer::bytes_done(u64 total) {
     return jup_printf("%s/s", nice_bytes((u64)(total / (elapsed_time() - start_time))));
 }
+jup_str Timer::counter_done(u64 total) {
+    float f = (float)total / (float)(elapsed_time() - start_time);
+    if (f < 10.f) {
+        return jup_printf("%.2f", f);
+    } else {
+        return jup_printf("%.0f", f);
+    }
+}
+
 
 jup_str Timer::total() {
     return nice_time(elapsed_time() - start_time);
@@ -1240,6 +1251,39 @@ void Histogram_exact::print_raw(jup_str fname) {
     calculate();
     histogram_print_raw_helper(fname, q.size()-1, q);
 }
+
+static thread_local bool is_calling_thread = false;
+extern "C" int profiler_check(void* arg) {
+    return is_calling_thread;
+}
+
+Profiler_context::Profiler_context(bool enable, jup_str output, bool only_this_thread) {
+    enabled = enable;
+    if (not enabled) return;
+    
+#ifdef JUP_USE_PROFILER
+    ProfilerOptions poptions {0};
+    if (only_this_thread) {
+        poptions.filter_in_thread = &profiler_check;
+        is_calling_thread = true;
+    }
+    auto result = ProfilerStartWithOptions(output.c_str(), &poptions);
+    if (not result) {
+        die("Profiler returned error at startup");
+    }
+#else
+    die("Not compiled with profiler support! Enable by compiling with USE_PROFILER=1.");
+#endif
+}
+
+Profiler_context::~Profiler_context() {
+#ifdef JUP_USE_PROFILER
+    if (enabled) {
+        ProfilerStop();
+    }
+#endif
+}
+
 
 jup_str get_date_string(std::time_t t) {
     if (t == (std::time_t)-1) {

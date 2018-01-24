@@ -36,3 +36,6 @@ README.html
 include_win/
 profdata/
 training_data/
+gs_data/
+params/
+make.config

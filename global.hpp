@@ -51,6 +51,8 @@ namespace std__filesystem = std::experimental::filesystem;
 #include <windows.h>
 #else
 #include <sys/ioctl.h>
+#include <sys/syscall.h>
+#include <sys/types.h>
 #include <time.h>
 #include <execinfo.h>
 #endif
@@ -123,6 +125,11 @@ inline T narrow(R from) {
 
 // Registers a signal handler to print things nicely
 void init_signals();
+
+// Registers the SIGINT handler, which sets the flag on receiving the first SIGINT. (The second one
+// terminates the program.) Use this if you want to handle SIGINTs gracefully.
+extern bool global_interrupt_flag;
+void init_signal_sigint();
 
 // Use these facilities for general output. They may redirect into a logfile later on.
 extern std::ostream& jout;

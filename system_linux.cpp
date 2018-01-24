@@ -146,4 +146,12 @@ jup_str get_error_msg_system(jup_str code) {
     die("Error codes of type %s are not supported on linux (and maybe not on other platforms, either).", code);
 }
 
+pid_t gettid() {
+    return syscall(SYS_gettid);
+}
+
+bool is_main_thread() {
+    return getpid() == gettid();
+}
+
 } /* end of namespace jup */

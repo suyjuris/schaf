@@ -280,6 +280,10 @@ struct Rng {
      * Generate a random value in [0, max)
      */
     u64 gen_uni(u64 max);
+    /**
+     * Generate a random value in [0, max)
+     */
+    u64 gen_uni(u64 min, u64 max) { return gen_uni(max - min) + min; }
     
     /**
      * Return an exponentially distributed value, with parameter lambda = perbyte/256. Slow.
@@ -343,7 +347,7 @@ extern Rng global_rng;
  * Write the bytes of object obj and extra_bytes additional bytes into the file at path.
  */
 template <typename T>
-void save_bytes(jup_str path, T const& obj, int extra_bytes = 0) {
+void save_bytes(jup_str path, T const& obj, s64 extra_bytes = 0) {
     assert(extra_bytes >= 0);
     std::ofstream o;
     o.open(path.c_str(), std::ios::out | std::ios::binary);
@@ -352,8 +356,8 @@ void save_bytes(jup_str path, T const& obj, int extra_bytes = 0) {
     assert_errno(o.good());
 }
 
-void load_bytes_object(jup_str path, char* into, int obj_size, int extra_bytes);
-void load_bytes_buffer(jup_str path, Buffer* into, int maxsize = -1);
+void load_bytes_object(jup_str path, char* into, s64 obj_size, s64 extra_bytes);
+void load_bytes_buffer(jup_str path, Buffer* into, s64 maxsize = -1);
 
 /**
  * Read the bytes from the file at path and treat it as an instance of obj. If extra_bytes is -1,
@@ -361,7 +365,7 @@ void load_bytes_buffer(jup_str path, Buffer* into, int maxsize = -1);
  * memory at obj+1 and following. Callers must ensure that there is space!
  */
 template <typename T>
-void load_bytes(jup_str path, T* obj, int extra_bytes = 0) {
+void load_bytes(jup_str path, T* obj, s64 extra_bytes = 0) {
     load_bytes_object(path, (char*)obj, sizeof(T), extra_bytes);
 }
 
@@ -402,9 +406,10 @@ struct Timer {
     jup_str counter(u64 have);
     
     /**
-     * Like bytes, but calculates the rate since starting the timer.
+     * Like bytes and counter, but calculates the rate since starting the timer.
      */
-    jup_str bytes_done(u64 total);
+    jup_str bytes_done (u64 total);
+    jup_str counter_done(u64 total);
 
     /**
      * Returns the total amount of time for the operation. Call this after the operation is
@@ -481,6 +486,19 @@ struct Histogram_exact {
  * Returns a formatted date and time in the form 2017-12-15_15-04-59. Uses tmp_alloc for storage.
  */
 jup_str get_date_string(std::time_t timestamp = -1);
+
+/**
+ * Enables profiling in this block, if enable is set and we are compiler with profiler support. If
+ * the latter is missing, we exit with an error. Enable profiler support by compiling with
+ * USE_PROFILER set to 1, e.g.
+ *     USE_PROFILER=1 make
+ */
+struct Profiler_context {
+    Profiler_context(bool enable, jup_str output, bool only_this_thread);
+    ~Profiler_context();
+
+    bool enabled;
+};
 
 /**
  * Boilerplate code for iterating over f(x), with user-defined f and x in some range.

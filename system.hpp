@@ -14,4 +14,6 @@ bool is_enabled_utf8();
 
 jup_str get_error_msg_system(jup_str code);
 
+bool is_main_thread();
+
 } /* end of namespace jup */

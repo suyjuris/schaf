@@ -31,12 +31,27 @@ extern "C" void handle_signal(int sig) {
     die(msg, sig);
 }
 
+bool global_interrupt_flag = false;
+
+extern "C" void handle_signal_sigint(int sig) {
+    assert(sig == SIGINT);
+    if (global_interrupt_flag) {
+        die("Error: Caught interrupt (again)");
+    }
+    jerr << "Caught interrupt, cleaning up... (send again to exit immediately)\n";
+    global_interrupt_flag = true;
+}
+
 void init_signals() {
     assert(std::signal(SIGINT,  &handle_signal) != SIG_ERR);
     assert(std::signal(SIGTERM, &handle_signal) != SIG_ERR);
     assert(std::signal(SIGILL,  &handle_signal) != SIG_ERR);
     assert(std::signal(SIGSEGV, &handle_signal) != SIG_ERR);
     assert(std::signal(SIGFPE,  &handle_signal) != SIG_ERR);
+}
+
+void init_signal_sigint() {
+    assert(std::signal(SIGINT,  &handle_signal_sigint) != SIG_ERR);
 }
 
 } /* end of namespace jup */

@@ -125,6 +125,17 @@ static void print_usage() {
         "  grid_search <input>\n"
         "    Randomly generates sets of hyperparameters and optimises them for some time. The "
             "results are printed.\n"
+        "\n"
+        "  cross_validate <input>\n"
+        "    Evaluates the network on the specified training data. Specify the parameters to use "
+            "via the --param-in option; note that the hyperparameters have to match the saved "
+            "network!\n"
+        "\n"
+        "  classify <input>\n"
+        "    Read the graphs from <input> and classify them using the network. Specify the "
+            "parameters to use via the --param-in option; note that the hyperparameters have to "
+            "match the saved network!\n"
+        "\n"
         "Options:\n"
         "  --edges-min,-e <val>  [default: none]\n"
         "  --edges-max,-E <val>  [default: none]\n"
@@ -137,13 +148,21 @@ static void print_usage() {
         "  --batch-size,-n <val> [default: " JUP_STRINGIFY(JUP_DEFAULT_BATCH_SIZE) "]\n"
         "    Number of instances per batch.\n"
         "\n"
-        "  --batch-nodes <val> [default: " JUP_STRINGIFY(JUP_DEFAULT_RECF_NODES) "]\n"
-        "    Number of nodes per instance.\n"
+        "  --recf-nodes <val> [default: " JUP_STRINGIFY(JUP_DEFAULT_RECF_NODES) "]\n"
+        "    Number of nodes per receptive field.\n"
         "\n"
-        "  --gen-graph-nodes <val> [default: " JUP_STRINGIFY(JUP_DEFAULT_GEN_GRAPH_NODES) "]\n"
-        "    Number of nodes needed per instance. For example, when choosing a value of 32, a "
-            "graph with 256 nodes would be used to generate 8 instances. However, these instances "
-            "may use the same nodes.\n"
+        "  --recf-count <val> [default: " JUP_STRINGIFY(JUP_DEFAULT_RECF_COUNT) "]\n"
+        "    Number of receptive fields.\n"
+        "\n"
+        "  --a1-size <val> [default: " JUP_STRINGIFY(JUP_DEFAULT_A1_SIZE) "]\n"
+        "  --a2-size <val> [default: " JUP_STRINGIFY(JUP_DEFAULT_A2_SIZE) "]\n"
+        "  --b1-size <val> [default: " JUP_STRINGIFY(JUP_DEFAULT_B1_SIZE) "]\n"
+        "  --b2-size <val> [default: " JUP_STRINGIFY(JUP_DEFAULT_B2_SIZE) "]\n"
+        "    Sizes of the different layers of the neural network.\n"
+        "\n"
+        "  --gen-instances <val> [default: " JUP_STRINGIFY(JUP_DEFAULT_GEN_INSTANCES) "]\n"
+        "    Number of instances generated per graph. Note that these instances may use the same "
+            "nodes. Only relevant during mode prepare_data.\n"
         "\n"
         "  --learning-rate,-l <val> [default: " JUP_STRINGIFY(JUP_DEFAULT_LEARNING_RATE) "]\n"
         "    The initial learning rate of the network. Note that when loading a parameter file, "
@@ -159,6 +178,9 @@ static void print_usage() {
         "\n"
         "  --l2reg,-2 <val> [default: " JUP_STRINGIFY(JUP_DEFAULT_L2REG) "]\n"
         "    The regularisation strength as applied to the l2 regularisation. Set to 0.f to disable.\n"
+        "\n"
+        "  --seed,-s <val> [default: " JUP_STRINGIFY(JUP_DEFAULT_SEED) "]\n"
+        "    Seed to initialise tensorflow randomness. If set to 0, random randomness is used.\n"
         "\n"
         "  --test-frac <val> [default: " JUP_STRINGIFY(JUP_DEFAULT_TEST_FRAC) "]\n"
         "    The fraction of the data set that is used as test data.\n"
@@ -188,6 +210,23 @@ static void print_usage() {
         "  --grid-max-time,-T <value> [default: " JUP_STRINGIFY(JUP_DEFAULT_GRID_MAX_TIME) "]\n"
         "    The amount of time a chosen set of hyperparameters (during grid search) is allowed to"
             "optimise, before being terminated.\n"
+        "\n"
+        "  --grid-params <batch-size> <rate> <a1-size> <a2-size> <b1-size> <b2-size> <dropout> <l2reg>\n"
+        "    Set all the hyperparameters at once. Useful for just copy-pasting a grid-search "
+            "result. You probably want to set the batch count before this.\n"
+        "\n"
+        "  --samples,-S <value> [default: " JUP_STRINGIFY(JUP_DEFAULT_SAMPLES) "]\n"
+        "    Number of times a neighbourhood will be generated for each graph in mode classify.\n"
+        "\n"
+        "  --profile <path> [default: none]\n"
+        "    Enables profiling. The results will be written to the specified location. Note that "
+            "profiling is "
+#ifdef USE_PROFILER
+            "DISABLED"
+#else
+            "ENABLED"
+#endif
+            " in this executable. (Build with USE_PROFILER=1 to enable.)\n"
         "\n"
         "  --help,-h\n"
         "    Prints this message.\n"
@@ -225,12 +264,27 @@ static bool parse_option(Schaf_options* options, Parse_state* state) {
     } else if (state->current == "--batch-size" or state->current == "-n") {
         pop_option_arg(state);
         options->hyp.batch_size = get_int(state, 1);
-    } else if (state->current == "--batch-nodes") {
+    } else if (state->current == "--recf-nodes") {
         pop_option_arg(state);
         options->hyp.recf_nodes = get_int(state, 1);
-    } else if (state->current == "--gen-graph-nodes") {
+    } else if (state->current == "--recf-count") {
         pop_option_arg(state);
-        options->hyp.gen_graph_nodes = get_int(state, 1);
+        options->hyp.recf_count = get_int(state, 1);
+    } else if (state->current == "--gen-instances") {
+        pop_option_arg(state);
+        options->hyp.gen_instances = get_int(state, 1);
+    } else if (state->current == "--a1-size") {
+        pop_option_arg(state);
+        options->hyp.a1_size = get_int(state, 1);
+    } else if (state->current == "--a2-size") {
+        pop_option_arg(state);
+        options->hyp.a2_size = get_int(state, 1);
+    } else if (state->current == "--b1-size") {
+        pop_option_arg(state);
+        options->hyp.b1_size = get_int(state, 1);
+    } else if (state->current == "--b2-size") {
+        pop_option_arg(state);
+        options->hyp.b2_size = get_int(state, 1);
     } else if (state->current == "--learning-rate" or state->current == "-l") {
         pop_option_arg(state);
         options->hyp.learning_rate = get_float(state, 0.f);
@@ -243,6 +297,9 @@ static bool parse_option(Schaf_options* options, Parse_state* state) {
     } else if (state->current == "--l2reg" or state->current == "-2") {
         pop_option_arg(state);
         options->hyp.l2_reg = get_float(state, 0.f);
+    } else if (state->current == "--seed" or state->current == "-s") {
+        pop_option_arg(state);
+        options->hyp.seed = (u64)get_int(state);
     } else if (state->current == "--test-frac") {
         pop_option_arg(state);
         options->hyp.test_frac = get_float(state, 0.f, 1.0f);
@@ -264,6 +321,20 @@ static bool parse_option(Schaf_options* options, Parse_state* state) {
     } else if (state->current == "--grid-max-time" or state->current == "-T") {
         pop_option_arg(state);
         options->grid_max_time = get_float(state, 0.f);
+    } else if (state->current == "--grid-params") {
+        int inst_total = options->hyp.num_instances();
+        pop_option_arg(state); options->hyp.batch_size = get_int(state, 1);
+        options->hyp.batch_count = inst_total / options->hyp.batch_size;
+        pop_option_arg(state); options->hyp.learning_rate = get_float(state, 0.f);
+        pop_option_arg(state); options->hyp.a1_size = get_int(state, 1);
+        pop_option_arg(state); options->hyp.a2_size = get_int(state, 1);
+        pop_option_arg(state); options->hyp.b1_size = get_int(state, 1);
+        pop_option_arg(state); options->hyp.b2_size = get_int(state, 1);
+        pop_option_arg(state); options->hyp.dropout = get_float(state, 0.1f, 1.f);
+        pop_option_arg(state); options->hyp.l2_reg = get_float(state, 0.f);
+    } else if (state->current == "--profile") {
+        pop_option_arg(state);
+        options->profiler_loc = state->current;
     } else if (state->current == "--") {
         if (not pop(state)) {
             parse_die(state, "Unexpected end of input, expected a mode.");
@@ -290,6 +361,8 @@ void options_execute(Schaf_options* options, Array_view<jup_str> args) {
         if (not parse_option(options, &state)) break;
     }
 
+    Profiler_context profiler_context {options->profiler_loc.size(), options->profiler_loc, true};
+    
     if (state.current == "write_graph") {
         if (not pop(&state)) {
             parse_die(&state, "Expected the <input> argument to mode write_graph.");
@@ -362,10 +435,21 @@ void options_execute(Schaf_options* options, Array_view<jup_str> args) {
         }
         jup_str input = state.current;
         network_grid_search(input);
+    } else if (state.current == "cross_validate") {
+        if (not pop(&state)) {
+            parse_die(&state, "Expected the <input> argument to mode cross_validate.");
+        }
+        jup_str input = state.current;
+        network_cross_validate(input);
+    } else if (state.current == "classify") {
+        if (not pop(&state)) {
+            parse_die(&state, "Expected the <input> argument to mode classify.");
+        }
+        jup_str input = state.current;
+        network_classify(input);
     } else {
         auto s = jup_printf(
-            "Unknown mode. Expected write_graph, print_stats, prepare_data, train, print_data_info,"
-            "dump_graph or dump_graph_random, got %s",
+            "Unknown mode: \"%s\"",
             state.current
         );
         parse_die(&state, s);

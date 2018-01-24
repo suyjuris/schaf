@@ -103,6 +103,8 @@ struct Buffer_view_mut {
     constexpr operator bool() const {
         return data() and size();
     }
+
+    operator std::string() const { return {data(), (std::size_t)size()}; }
     
 	void* m_data;
 	int m_size;
@@ -219,9 +221,7 @@ struct Buffer_view {
         return data() and size();
     }
 
-    operator std::string() const {
-        return {data(), (std::size_t)size()};
-    }
+    operator std::string() const { return {data(), (std::size_t)size()}; }
     
 	void const* m_data;
 	int m_size;
