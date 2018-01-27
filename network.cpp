@@ -96,15 +96,16 @@ bool Hyperparam::valid() const {
         and 0   <  dropout              and dropout             <= 1.f
         and std::isfinite(dropout)
         and 0   <= l2_reg               and l2_reg              <  100.f
-        and std::isfinite(l2_reg);
+        and std::isfinite(l2_reg)
+        and _alignment >= 0 and _alignment % sizeof(float) == 0;
 }
 
 Batch_data Training_data::batch(int index) {
     Batch_data result;
-    result.edge_weights = {&batch_data[index * hyp.floats_batch()], narrow<int>(hyp.floats_edge_weights())};
+    result.edge_weights = {&batch_data[index * hyp.floats_batch_aligned()], narrow<int>(hyp.floats_edge_weights())};
     result.results = {result.edge_weights.end(), narrow<int>(hyp.floats_results())};
     assert(result.results.end() <= batch_data.end());
-    assert(result.results.end() == batch_data.begin() + (index + 1) * hyp.floats_batch());
+    assert(result.results.end() == batch_data.begin() + index * hyp.floats_batch_aligned() + hyp.floats_batch());
     return result;
 }
 Batch_data Training_data::instance(int index) {
@@ -120,7 +121,10 @@ Unique_ptr_free<Training_data> Training_data::make_unique(Hyperparam hyp) {
         print_hyperparam(hyp);
         die("Invalid hyperparameters in Training_data::make_unique! Something has gone horribly wrong...");
     }
-    Unique_ptr_free<Training_data> result {(Training_data*)std::calloc(sizeof(Training_data) + hyp.bytes_total(), 1)};
+    u64 size = sizeof(Training_data) + hyp.bytes_total();
+    void* ptr = aligned_alloc(hyp.alignment(), size);
+    std::memset(ptr, 0, size);
+    Unique_ptr_free<Training_data> result {(Training_data*)ptr};
     result->hyp = hyp;
     result->batch_data.m_size = hyp.floats_total();
     return result;
@@ -376,22 +380,67 @@ Network_state* network_init(Hyperparam hyp) {
     return state;
 }
 
-static void fill_tensors(Hyperparam hyp, Batch_data const& batch, tensorflow::Tensor* data_x, tensorflow::Tensor* data_y) {
-    using namespace tensorflow;
-    
-    if (data_x->NumElements() == 0) {
-        *data_x = Tensor {DT_FLOAT, {hyp.batch_size, hyp.recf_count, hyp.edges_recf()}};
-    }
-    if (data_y->NumElements() == 0) {
-        *data_y = Tensor {DT_FLOAT, {hyp.batch_size}};
-    }
-    
-    assert(batch.edge_weights.size() == data_x->NumElements());
-    std::memcpy(data_x->flat<float>().data(), batch.edge_weights.data(), batch.edge_weights.size() * sizeof(float));
+struct Allocator_Zero_copy: public tensorflow::Allocator {
+    void* ptr = nullptr;
+    u64 size = 0;
 
+    Allocator_Zero_copy() {}
     
-    assert(batch.results.size() == data_y->NumElements());
-    std::memcpy(data_y->flat<float>().data(), batch.results.data(), batch.results.size() * sizeof(float));
+    template <typename T>
+    Allocator_Zero_copy(Array_view_mut<T> arr) {
+        ptr = arr.begin();
+        size = arr.size() * sizeof(T);
+    }
+
+    std::string Name() override { return "Allocator_Zero_Copy"; }
+    
+    void* AllocateRaw(size_t alignment, size_t num_bytes) override {
+        assert((u64)ptr % alignment == 0);
+        assert(num_bytes == size);
+        if ((u64)ptr % alignment == 0 and num_bytes == size) {
+            return ptr;
+        }
+        return nullptr;
+    }
+
+    void DeallocateRaw(void* ptr) override {}
+};
+
+static void hyp_init_alignment(Hyperparam* hyp) {
+    hyp->_alignment = tensorflow::Allocator::kAllocatorAlignment;
+    if (hyp->_alignment % sizeof(float) != 0) {
+        // Can just set the alignment to a multiple that does...
+        die("Somehow tensorflow alignment does not include float alignment.");
+    }
+}
+
+struct Batch_tensors {
+    tensorflow::Tensor data_x, data_y;
+    Allocator_Zero_copy data_x_alloc, data_y_alloc;
+};
+
+static void fill_tensors(Hyperparam hyp, Batch_data const& batch, Batch_tensors* into) {
+    using namespace tensorflow;
+
+    into->data_x_alloc = {batch.edge_weights};
+    into->data_y_alloc = {batch.results};
+    
+    into->data_x = Tensor {&into->data_x_alloc, DT_FLOAT, {hyp.batch_size, hyp.recf_count, hyp.edges_recf()}};
+    into->data_y = Tensor {&into->data_y_alloc, DT_FLOAT, {hyp.batch_size}};
+
+    // The following code does not need to have the memory aligned, but is really SLOW.
+    //if (data_x->NumElements() == 0) {
+    //    *data_x = Tensor {DT_FLOAT, {hyp.batch_size, hyp.recf_count, hyp.edges_recf()}};
+    //}
+    //if (data_y->NumElements() == 0) {
+    //    *data_y = Tensor {DT_FLOAT, {hyp.batch_size}};
+    //}
+    //
+    //assert(batch.edge_weights.size() == data_x->NumElements());
+    //std::memcpy(data_x->flat<float>().data(), batch.edge_weights.data(), batch.edge_weights.size() * sizeof(float));
+    //
+    //assert(batch.results.size() == data_y->NumElements());
+    //std::memcpy(data_y->flat<float>().data(), batch.results.data(), batch.results.size() * sizeof(float));    
 }
 
 static void network_batch(Network_state* state, Batch_data const& data, bool silent) {
@@ -402,8 +451,8 @@ static void network_batch(Network_state* state, Batch_data const& data, bool sil
 
     auto hyp = state->hyp;
 
-    Tensor data_x, data_y;
-    fill_tensors(hyp, data, &data_x, &data_y);
+    Batch_tensors tensors;
+    fill_tensors(hyp, data, &tensors);
 
     if (hyp.learning_rate_decay
         and state->epoch % hyp.learning_rate_decay == 0
@@ -422,7 +471,7 @@ static void network_batch(Network_state* state, Batch_data const& data, bool sil
     
     std::vector<Tensor> outputs;
     TF_CHECK_OK(state->session.Run(
-        {{state->x, data_x}, {state->y, data_y}},
+        {{state->x, tensors.data_x}, {state->y, tensors.data_y}},
         {state->loss},
         {state->update_op},
         &outputs
@@ -434,7 +483,7 @@ static void network_batch(Network_state* state, Batch_data const& data, bool sil
     if (global_options.iter_event and state->step % global_options.iter_event == 0) {
         outputs.clear();
         TF_CHECK_OK(state->session.Run(
-            {{state->x, data_x}, {state->y, data_y}},
+            {{state->x, tensors.data_x}, {state->y, tensors.data_y}},
             {state->summary_op},
             {},
             &outputs
@@ -474,12 +523,12 @@ static Network_validate_result network_validate(Network_state* state, Training_d
     // Need to turn off dropout during validation
     TF_CHECK_OK(state->session.Run({}, {}, {state->dropout_off_op}, nullptr));
 
-    Tensor data_x, data_y;
+    Batch_tensors tensors;
     std::vector<Tensor> outputs;
     for (int i = 0; i < data_test.hyp.batch_count; ++i) {
-        fill_tensors(data_test.hyp, data_test.batch(i), &data_x, &data_y);
+        fill_tensors(data_test.hyp, data_test.batch(i), &tensors);
         TF_CHECK_OK(state->session.Run(
-            {{state->x, data_x}, {state->y, data_y}},
+            {{state->x, tensors.data_x}, {state->y, tensors.data_y}},
             {state->loss, state->y_out},
             {},
             &outputs
@@ -742,7 +791,7 @@ void network_generate_data(jup_str graph_file, Training_data* data) {
             auto s = jup_printf(" (batch %d/%d, instance %d/%d, graph %s, ", cur_batch, data->hyp.batch_count,
                 cur_instance, data->hyp.batch_size, state_graph.graph->name.begin());
             jout << "  Currently at " << timer.progress(cur_batch * data->hyp.batch_size + cur_instance) << s
-                 << timer.bytes(cur_batch * data->hyp.bytes_batch() + cur_instance * data->hyp.bytes_instance())
+                 << timer.bytes(cur_batch * data->hyp.bytes_batch_aligned() + cur_instance * data->hyp.bytes_instance())
                  << ")" << endl;
         }
 
@@ -773,6 +822,7 @@ void network_generate_data(jup_str graph_file, Training_data* data) {
             }
 
             // Empirical values for normalization
+
             // cdf = c2 * exp(c1*x) + c3
             constexpr float c1 = 4.2991;
             constexpr float c2 = 0.0154927;
@@ -797,25 +847,25 @@ void network_generate_data(jup_str graph_file, Training_data* data) {
 
     graph_reader_close(&state_graph);
 
-    jout << "Done. (" << timer.total() << ", " << timer.bytes_done(cur_batch * data->hyp.bytes_batch())
+    jout << "Done. (" << timer.total() << ", " << timer.bytes_done(cur_batch * data->hyp.bytes_batch_aligned())
          << ", " << num_graph << " ordinary graphs, " << num_random << " random graphs, " << num_rewind
          << " rewinds)" << endl;
 }
 
-void network_shuffle(Training_data const& from, Training_data* into, int offset, bool silent) {
+void network_shuffle(Training_data const* from, Training_data* into, int offset, bool silent) {
     assert(into);
-    assert(from.hyp.valid() and into->hyp.valid());
-    assert(0 <= offset and offset < from.hyp.num_instances());
+    assert(from->hyp.valid() and into->hyp.valid());
+    assert(0 <= offset and offset < from->hyp.num_instances());
 
-    if (from.hyp.recf_nodes != into->hyp.recf_nodes) {
+    if (from->hyp.recf_nodes != into->hyp.recf_nodes) {
         die("Incompatible sets of hyperparameters, different number of nodes per receptive field "
-            "(have: %d, want: %d)", from.hyp.recf_nodes, into->hyp.recf_nodes+0 /* packing */);
-    } else if (from.hyp.recf_count != into->hyp.recf_count) {
+            "(have: %d, want: %d)", from->hyp.recf_nodes, into->hyp.recf_nodes+0 /* packing */);
+    } else if (from->hyp.recf_count != into->hyp.recf_count) {
         die("Incompatible sets of hyperparameters, different number receptive fields "
-            "(have: %d, want: %d)", from.hyp.recf_count, into->hyp.recf_count+0 /* packing */);
-    } else if (from.hyp.num_instances() - offset < into->hyp.num_instances()) {
+            "(have: %d, want: %d)", from->hyp.recf_count, into->hyp.recf_count+0 /* packing */);
+    } else if (from->hyp.num_instances() - offset < into->hyp.num_instances()) {
         die("Incompatible sets of hyperparameters, there is not enough data to fill the target "
-            "(have: %d instances, want: %d instances)", (int)from.hyp.num_instances() - offset,
+            "(have: %d instances, want: %d instances)", (int)from->hyp.num_instances() - offset,
             (int)into->hyp.num_instances());
     }
     
@@ -823,17 +873,17 @@ void network_shuffle(Training_data const& from, Training_data* into, int offset,
 
     Array<int> left;
     left.resize(into->hyp.num_instances());
-    for (int i = 0; i < left.size(); ++i) left[i] = i + offset;
+    for (int i = 0; i < left.size(); ++i) left[i] = i;
 
     Rng rng {global_rng.rand()};
-    for (int i = 0; i < into->hyp.num_instances(); ++i) {
+    for (int j = offset; j < offset + into->hyp.num_instances(); ++j) {
         int index = rng.gen_uni(left.size());
-        int j = left[index];
+        int i = left[index];
         left[index] = left.back();
         left.pop_back();
 
         // Move instance j into instance i
-        auto j_inst = const_cast<Training_data&>(from).instance(j);
+        auto j_inst = const_cast<Training_data*>(from)->instance(j);
         auto i_inst = into->instance(i);
         jup_memcpy(&i_inst.edge_weights, j_inst.edge_weights);
         jup_memcpy(&i_inst.results, j_inst.results);
@@ -895,6 +945,8 @@ void network_load_data(
     auto data_orig = Training_data::make_unique(hyp_td);
     load_bytes(data_file, data_orig.get(), Training_data::bytes_extra(hyp_td));
 
+    hyp_init_alignment(&hyp);
+    
     Hyperparam hyp_train = hyp;
     Hyperparam hyp_test  = hyp;
     hyp_test.batch_count = data_test ? hyp.test_frac * hyp.batch_count : 0;
@@ -918,11 +970,11 @@ void network_load_data(
     // different values of batch_size correctly
 
     *data_train = Training_data::make_unique(hyp_train);
-    network_shuffle(*data_orig, data_train->get(), 0, true);
+    network_shuffle(data_orig.get(), data_train->get(), 0, true);
     
     if (data_test) {
         *data_test  = Training_data::make_unique(hyp_test );
-        network_shuffle(*data_orig, data_test->get(), (**data_train).hyp.num_instances(), true);
+        network_shuffle(data_orig.get(), data_test->get(), (**data_train).hyp.num_instances(), true);
     }
     
     u64 hash = hash_shuffle_inv(*data_orig, hyp.num_instances());
@@ -931,6 +983,72 @@ void network_load_data(
     } else {
         assert(hash == hash_shuffle_inv(**data_train));
     }
+}
+
+struct Async_shuffler {
+    Training_data const* from;
+    Training_data* into;
+    int offset;
+    bool received_params;
+    bool keep_alive;
+    
+    std::thread thread;
+    std::mutex shuffling;
+    std::condition_variable cv_swap, cv_start;
+};
+
+void async_shuffle_init(Async_shuffler* shuffler) {
+    assert(not shuffler->thread.joinable());
+    
+    auto func = [shuffler] () {
+        std::unique_lock<std::mutex> lock {shuffler->shuffling};
+        shuffler->cv_start.notify_all();
+        while (true) {
+            while (shuffler->keep_alive and not shuffler->received_params) {
+                shuffler->cv_swap.wait(lock);
+            }
+            if (not shuffler->keep_alive) break;
+            shuffler->received_params = false;
+            network_shuffle(shuffler->from, shuffler->into, shuffler->offset, true);
+        }
+    };
+
+    std::mutex dummy;
+    std::unique_lock<std::mutex> lock {dummy};
+    
+    shuffler->keep_alive = true;
+    shuffler->received_params = false;
+    shuffler->thread = std::thread {func};
+    shuffler->cv_start.wait(lock);
+}
+
+void async_shuffle_start(Async_shuffler* shuffler, Training_data const* from, Training_data* into, int offset) {
+    assert(shuffler->thread.joinable());
+    
+    shuffler->from = from;
+    shuffler->into = into;
+    shuffler->offset = offset;
+    shuffler->received_params = true;
+
+    shuffler->shuffling.unlock();
+    shuffler->cv_swap.notify_all();
+}
+
+void async_shuffle_wait(Async_shuffler* shuffler) {
+    assert(shuffler->thread.joinable());
+    
+    shuffler->shuffling.lock();
+}
+
+void async_shuffle_close(Async_shuffler* shuffler) {
+    assert(shuffler->thread.joinable());
+    
+    async_shuffle_wait(shuffler);
+    shuffler->keep_alive = false;
+    shuffler->shuffling.unlock();
+    shuffler->cv_swap.notify_all();
+    
+    shuffler->thread.join();
 }
 
 void network_train(jup_str data_file) {
@@ -954,6 +1072,10 @@ void network_train(jup_str data_file) {
         network_restore(state);
     }
 
+    Async_shuffler shuffler;
+    async_shuffle_init(&shuffler);
+    async_shuffle_start(&shuffler, data_train.get(), data_tmp.get(), 0);
+    
     jout << "Training..." << endl;
     //int initial_step = state->step;
     int cur_batch = 0;
@@ -962,8 +1084,9 @@ void network_train(jup_str data_file) {
         ++cur_batch;
         
         if (cur_batch >= data_train->hyp.batch_count) {
-            network_shuffle(*data_train, data_tmp.get(), 0, true);
+            async_shuffle_wait(&shuffler);
             std::swap(data_train, data_tmp);
+            async_shuffle_start(&shuffler, data_train.get(), data_tmp.get(), 0);
             cur_batch = 0;
             ++state->epoch;
             state->epoch_start = state->step;
@@ -997,6 +1120,7 @@ void network_train(jup_str data_file) {
         if (global_interrupt_flag) break;
     }
 
+    async_shuffle_close(&shuffler);
     
     if (global_options.logdir) {
         jout << "Saving parameters to \"" << state->save_path << "\"... \n";
@@ -1063,7 +1187,7 @@ void network_print_data_info(jup_str data_file) {
 }
 
 void network_random_hyp(Hyperparam* hyp, Rng* rng) {
-    int inst_total = hyp->num_instances();
+    /*int inst_total = hyp->num_instances();
     hyp->batch_size = rng->gen_uni(64, 257);
     hyp->batch_count = inst_total / hyp->batch_size;
     
@@ -1083,6 +1207,27 @@ void network_random_hyp(Hyperparam* hyp, Rng* rng) {
     hyp->b2_size /= hyp->dropout;
     
     hyp->l2_reg = rng->gen_uni_float() * 0.002;
+    */
+    int inst_total = hyp->num_instances();
+    hyp->batch_size = rng->gen_uni(100, 351);
+    hyp->batch_count = inst_total / hyp->batch_size;
+    
+    hyp->learning_rate = rng->gen_uni_float() * 0.1 + 0.1;
+    hyp->learning_rate_decay = rng->gen_uni(10, 61);
+    
+    hyp->a1_size = rng->gen_uni(20,  48 + 1);
+    hyp->a2_size = rng->gen_uni(10,  30 + 1);
+    hyp->b1_size = rng->gen_uni( 8, 128 + 1);
+    hyp->b2_size = rng->gen_uni( 2,  48 + 1);
+
+    hyp->dropout = rng->gen_uni_float()*0.1 + 0.9;
+
+    hyp->a1_size /= hyp->dropout;
+    hyp->a2_size /= hyp->dropout;
+    hyp->b1_size /= hyp->dropout;
+    hyp->b2_size /= hyp->dropout;
+    
+    hyp->l2_reg = rng->gen_uni_float() * 0.0002;
 }
 
 void network_grid_search(jup_str data_file) {
@@ -1096,38 +1241,49 @@ void network_grid_search(jup_str data_file) {
     setenv("TF_CPP_MIN_LOG_LEVEL", "1", 0);
     init_signal_sigint();
     
-    Unique_ptr_free<Training_data> data_train, data_test, data_train_tmp, data_test_tmp;
+    Unique_ptr_free<Training_data> data_train, data_test, data_train_tmp, data_train_tmp2, data_test_tmp;
     network_load_data(data_file, hyp, &data_train, &data_test);
-    data_train_tmp = Training_data::make_unique(data_train->hyp);
-    data_test_tmp  = Training_data::make_unique(data_test ->hyp);
+    data_train_tmp  = Training_data::make_unique(data_train->hyp);
+    data_train_tmp2 = Training_data::make_unique(data_train->hyp);
+    data_test_tmp   = Training_data::make_unique(data_test ->hyp);
 
     jout << '\n';
     jout << "  trai | test | comp | iter | batch |  rate  | decay | a1 | a2 | b1 | b2 | dropout | l2\n";
     jout.flush();
 
     double best_loss = std::numeric_limits<double>::infinity();
-    
+
+    Async_shuffler shuffler;
+    async_shuffle_init(&shuffler);
+
     while (true) {
         Hyperparam hyp_rand = data_train->hyp;
         network_random_hyp(&hyp_rand, &rng);
 
-        data_train_tmp->hyp = hyp_rand;
-        data_test_tmp ->hyp = hyp_rand;
+        data_train_tmp ->hyp = hyp_rand;
+        data_train_tmp2->hyp = hyp_rand;
+        data_test_tmp  ->hyp = hyp_rand;
         data_test_tmp->hyp.batch_count = data_test->hyp.num_instances() / hyp_rand.batch_size;
-        
-        network_shuffle(*data_train, data_train_tmp.get(), 0, true);
-        network_shuffle(*data_test,  data_test_tmp .get(), 0, true);
+
+        async_shuffle_start(&shuffler, data_train.get(), data_train_tmp.get(), 0);
+        network_shuffle(data_test.get(), data_test_tmp.get(), 0, true);
         
         auto state = network_init(hyp_rand);
         double start_time = elapsed_time();
         int cur_batch = 0;
+        
+        async_shuffle_wait(&shuffler);
+        async_shuffle_start(&shuffler, data_train_tmp.get(), data_train_tmp2.get(), 0);
 
         while (elapsed_time() < start_time + global_options.grid_max_time) {
             network_batch(state, data_train_tmp->batch(cur_batch), true);
             ++cur_batch;
         
             if (cur_batch >= data_train_tmp->hyp.batch_count) {
-                network_shuffle(*data_train, data_train_tmp.get(), 0, true);
+                async_shuffle_wait(&shuffler);
+                std::swap(data_train_tmp, data_train_tmp2);
+                async_shuffle_start(&shuffler, data_train_tmp.get(), data_train_tmp2.get(), 0);
+                
                 cur_batch = 0;
                 ++state->epoch;
                 state->epoch_start = state->step;
@@ -1136,6 +1292,8 @@ void network_grid_search(jup_str data_file) {
             if (global_interrupt_flag) break;
         }
         if (global_interrupt_flag) break; // Leak, but we are about to exit anyways
+        
+        async_shuffle_wait(&shuffler);
 
         auto vali = network_validate(state, *data_test_tmp);
         double loss_test     = vali.loss_test;
@@ -1159,6 +1317,8 @@ void network_grid_search(jup_str data_file) {
 
         network_free(state);
     }
+    
+    async_shuffle_close(&shuffler);
 }
 
 void network_cross_validate(jup_str data_file) {
@@ -1209,6 +1369,7 @@ void network_classify(jup_str graph_file) {
     jout << "  Using sample count of " << global_options.samples << "..." << endl;
     hyp.batch_count = 1;
     hyp.batch_size = global_options.samples;
+    hyp_init_alignment(&hyp);
     auto _data = Training_data::make_unique(hyp);
     auto batch = _data->batch(0);
     jup_memset(&batch.edge_weights);
@@ -1232,8 +1393,8 @@ void network_classify(jup_str graph_file) {
     int num_graph = 0;
     int num_positive = 0;
     int num_negative = 0;
-    
-    tensorflow::Tensor data_x, data_y;
+
+    Batch_tensors tensors;
     std::vector<tensorflow::Tensor> outputs;
 
     jout << "\n   min  |  max  |  avg  | name\n";
@@ -1246,10 +1407,10 @@ void network_classify(jup_str graph_file) {
         }
         // results are already set to 0
 
-        fill_tensors(hyp, batch, &data_x, &data_y);
+        fill_tensors(hyp, batch, &tensors);
         outputs.clear();
         TF_CHECK_OK(state->session.Run(
-            {{state->x, data_x}},
+            {{state->x, tensors.data_x}},
             {state->y_out},
             {},
             &outputs
@@ -1289,168 +1450,4 @@ void network_classify(jup_str graph_file) {
          << "  Graphs negative: " << num_negative << '\n';
 }
 
-/*
-void network_test() {
-    using namespace tensorflow;
-    
-    Hyperparam hyp;
-    hyp.batch_count = 1;
-    hyp.batch_size = 2;
-    hyp.recf_nodes = 2;
-    hyp.recf_count = 3;
-    hyp.a1_size = 3;
-    hyp.b1_size = 2;
-    hyp.dropout = 0.5;
-
-    auto data = Training_data::make_unique(hyp);
-    for (float& i: data->batch(0).edge_weights) {
-        i = ((float)global_rng.gen_uni(5) - 2.f) / 2.f;
-    }
-    for (float& i: data->batch(0).results) {
-        i = global_rng.gen_bool() ? -1.f : 1.f;;
-    }
-    
-    auto state = network_init(hyp);
-
-    Tensor data_x, data_y;
-    fill_tensors(hyp, data->batch(0), &data_x, &data_y);
-
-    TF_CHECK_OK(state->session.Run(
-        {{state->x, data_x}, {state->y, data_y}},
-        {},
-        {state->print_op},
-        nullptr
-    ));
-    TF_CHECK_OK(state->session.Run(
-        {{state->x, data_x}, {state->y, data_y}},
-        {},
-        {state->print_op},
-        nullptr
-    ));
-    
-    network_free(state);
-}
-
-static void network_run_op(Network_state* state, jup_str name) {
-    using namespace tensorflow;
-    using namespace tensorflow::ops;
-    
-    Node* node = nullptr;
-    for (int i = 0; i < state->graph.node_size(); ++i) {
-        if (jup_str {state->graph.node(i).name()} == name) {
-            //node = state->graph.node(i);
-            break;
-        }
-    }
-    assert(node);
-
-    TF_CHECK_OK( state->session.Run({Output {node}}, nullptr) );
-    }*/
-
-    /*
-    MetaGraphDef meta_graph_def;
-    MetaGraphDef::MetaInfoDef meta_info_def;
-    meta_info_def.set_tensorflow_version(tf_compiler_version());
-    meta_info_def.set_tensorflow_git_version(tf_git_version());
-    meta_graph_def.mutable_meta_info_def()->MergeFrom(meta_info_def);
-
-    meta_graph_def.mutable_graph_def()->MergeFrom(graph_def);
-
-    OpList stripped_op_list;
-    StrippedOpListForGraph(graph_def, *OpRegistry::Global(), &stripped_op_list);
-    meta_graph_def.mutable_meta_info_def()->mutable_stripped_op_list()->MergeFrom(stripped_op_list);
-    */
-
 } /* end of namespace jup */
-
-#if 0
-    GraphDef graph_def;
-    TF_CHECK_OK( state->root.ToGraphDef(&graph_def) );
-    Session* session;
-    SessionOptions options;
-    TF_CHECK_OK( NewSession(options, &session) );
-    TF_CHECK_OK( session->Create(graph_def) );
-
-    Tensor data_rate {DT_FLOAT, {}};
-    data_rate.scalar<float>()() = 0.01f;
-    TF_CHECK_OK(session->Run(
-        {},
-        {},
-        {"init/run"},
-        &outputs
-    ));
-    std::vector<std::string> node_names;
-    for (int i = 0; i < graph_def.node_size(); ++i) {
-        OpDef const* op_def;
-        TF_CHECK_OK( OpRegistry::Global()->LookUpOpDef(graph_def.node(i).op(), &op_def) );
-        if (op_def->name() == "Placeholder") continue;
-        int output_size = op_def->output_arg_size();
-        for (int j = 0; j < output_size; ++j) {
-            node_names.push_back(graph_def.node(i).name() + jup_printf(":%d", j).c_str());
-        }
-    }
-    jdbg >= node_names ,0;
-    
-    outputs.clear();
-    TF_CHECK_OK(session->Run(
-        {{"x", data_x}, {"y", data_y}, {"rate", data_rate}},
-        node_names,
-        {},
-        &outputs
-    ));
-
-    node_names.push_back("x");
-    node_names.push_back("y");
-    outputs.push_back(data_x);
-    outputs.push_back(data_y);
-    size_t id3 = 0;
-    size_t mat_mul3 = 0;
-    for (std::size_t i = 0; i < outputs.size(); ++i) {
-        if (outputs[i].dtype() != DT_FLOAT) continue;
-        if (node_names[i] == "grad/Identity_2:0") id3 = i;
-        if (node_names[i] == "grad/MatMul_3:0") mat_mul3 = i;
-        jdbg < node_names[i] < outputs[i].flat<float>().size() >= Array_view<float> {outputs[i].flat<float>().data(),
-                std::min((int)outputs[i].flat<float>().size(), 100)} ,0;
-    }
-
-    
-    {auto mat = data_x.matrix<float>();
-        /*for (int i = 0; i < mat.dimension(0); ++i) {
-        jdbg >= Array_view<float> {mat.data() + i*mat.dimension(1), (int)mat.dimension(1)} ,0;;
-        }*/
-    for (int i = 0; i < mat.dimension(1); ++i) {
-        for (int j = 0; j < mat.dimension(0); ++j) {
-            jdbg < mat(j, i);
-        }
-        jdbg ,0;
-    }
-    jdbg ,4;}
-
-    {auto mat = outputs[id3].matrix<float>();
-    
-    for (int i = 0; i < mat.dimension(1); ++i) {
-        for (int j = 0; j < mat.dimension(0); ++j) {
-            jdbg < mat(j, i);
-        }
-        jdbg ,0;
-    }
-    /*for (int i = 0; i < mat.dimension(0); ++i) {
-        jdbg >= Array_view<float> {mat.data() + i*mat.dimension(1), (int)mat.dimension(1)} ,0;;
-        }*/
-    jdbg ,4;}
-    {auto mat = outputs[mat_mul3].matrix<float>();
-    
-    for (int i = 0; i < mat.dimension(1); ++i) {
-        for (int j = 0; j < mat.dimension(0); ++j) {
-            jdbg < mat(j, i);
-        }
-        jdbg ,0;
-    }
-    /*for (int i = 0; i < mat.dimension(0); ++i) {
-        jdbg >= Array_view<float> {mat.data() + i*mat.dimension(1), (int)mat.dimension(1)} ,0;;
-        }*/
-    jdbg ,4;}
-
-    std::exit(0);
-#endif
-    

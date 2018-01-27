@@ -47,7 +47,11 @@ struct Hyperparam {
     float l2_reg = (float)JUP_DEFAULT_L2REG;
 
     u64 seed = JUP_DEFAULT_SEED; // seed to initialize randomness in tensorflow. Set to 0 to use a random seed.
+    int _alignment = 0; // alignment of the individual batches
 
+    int alignment() const {
+        return _alignment + (_alignment == 0) * sizeof(float);
+    }
     s64 num_instances() const {
         return batch_count * batch_size;
     }
@@ -60,17 +64,20 @@ struct Hyperparam {
     s64 floats_batch() const {
         return floats_edge_weights() + floats_results();
     }
-    s64 floats_total() const {
-        return floats_batch() * batch_count;
+    s64 bytes_batch_aligned() const {
+        return (floats_batch() * sizeof(float) + alignment()-1) / alignment() * alignment();
     }
-    s64 bytes_batch() const {
-        return floats_batch() * sizeof(float);
+    s64 floats_batch_aligned() const {
+        return bytes_batch_aligned() / sizeof(float);
     }
     s64 bytes_instance() const {
         return floats_batch() / batch_size * sizeof(float);
     }
+    s64 floats_total() const {
+        return floats_batch_aligned() * batch_count;
+    }
     s64 bytes_total() const {
-        return floats_total() * sizeof(float);
+        return bytes_batch_aligned() * batch_count;
     }
     bool valid() const;
     
@@ -99,9 +106,12 @@ struct Batch_data {
 struct Training_data {
     union {
         Hyperparam hyp; // This must be in front!
-        char _buffer[256];
+        char _buffer1[256-32];
     };
-    Flat_array64_const<float> batch_data;
+    union {
+        Flat_array64_const<float, 32> batch_data;
+        char _buffer2[32];
+    };
 
     static Unique_ptr_free<Training_data> make_unique(Hyperparam hyp);
 
@@ -114,7 +124,9 @@ struct Training_data {
     static s64 bytes_total(Hyperparam hyp) {
         return sizeof(Training_data) + bytes_extra(hyp);
     }
-} __attribute__((__packed__));
+};
+
+static_assert(sizeof(Training_data) == 256);
 
 struct Network_state;
 
@@ -129,7 +141,6 @@ void network_load_data(jup_str data_file, Hyperparam hyp, Unique_ptr_free<Traini
 
 void network_prepare_data(jup_str graph_file, jup_str data_file, Hyperparam hyp);
 void network_train(jup_str data_file);
-void network_test();
 void network_print_data_info(jup_str data_file);
 void network_grid_search(jup_str data_file);
 void network_cross_validate(jup_str data_file);

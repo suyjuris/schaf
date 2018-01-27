@@ -14,7 +14,7 @@ CXX      = g++
 CXXFLAGS = -g -Wall -Werror -pedantic -fmax-errors=2
 CPPFLAGS = -std=c++1z -DJUP_OS=$(MODE) -DJUP_OS_$(MODE) -Ibuild_files/include_linux
 LDFLAGS  = -Wall
-LIBS     = -lz -ltensorflow_cc -ltensorflow_framework -lstdc++fs
+LIBS     = -lz -ltensorflow_cc -ltensorflow_framework -lstdc++fs -lpthread
 
 # Put your custom configuration in there
 make.config:

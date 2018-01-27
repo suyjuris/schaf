@@ -48,11 +48,6 @@ f.seek(0)
 raw = f.read()
 f.close()
 
-f = open(output_dir + '/data_raw.out', 'w')
-f.write(raw)
-f.close()
-
-
 template_main = '''
     set encoding utf8
     set style line 1 dashtype 1              lw 6 lc rgb '#7f0a13' 
@@ -76,6 +71,11 @@ template_one = '''
 '''
 
 os.makedirs(output_dir, exist_ok=True)
+
+f = open(output_dir + '/data_raw.out', 'w')
+f.write(raw)
+f.close()
+
 plot_file = output_dir + '/tmp_plot.gnuplot'
 f_plot = open(plot_file, 'w')
 

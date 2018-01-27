@@ -211,7 +211,7 @@ static void print_usage() {
         "    The amount of time a chosen set of hyperparameters (during grid search) is allowed to"
             "optimise, before being terminated.\n"
         "\n"
-        "  --grid-params <batch-size> <rate> <a1-size> <a2-size> <b1-size> <b2-size> <dropout> <l2reg>\n"
+        "  --grid-params <batch-size> <rate> <decay> <a1-size> <a2> <b1> <b2> <dropout> <l2reg>\n"
         "    Set all the hyperparameters at once. Useful for just copy-pasting a grid-search "
             "result. You probably want to set the batch count before this.\n"
         "\n"
@@ -326,12 +326,16 @@ static bool parse_option(Schaf_options* options, Parse_state* state) {
         pop_option_arg(state); options->hyp.batch_size = get_int(state, 1);
         options->hyp.batch_count = inst_total / options->hyp.batch_size;
         pop_option_arg(state); options->hyp.learning_rate = get_float(state, 0.f);
+        pop_option_arg(state); options->hyp.learning_rate_decay = get_int(state, 1);
         pop_option_arg(state); options->hyp.a1_size = get_int(state, 1);
         pop_option_arg(state); options->hyp.a2_size = get_int(state, 1);
         pop_option_arg(state); options->hyp.b1_size = get_int(state, 1);
         pop_option_arg(state); options->hyp.b2_size = get_int(state, 1);
         pop_option_arg(state); options->hyp.dropout = get_float(state, 0.1f, 1.f);
         pop_option_arg(state); options->hyp.l2_reg = get_float(state, 0.f);
+    } else if (state->current == "--samples") {
+        pop_option_arg(state);
+        options->samples = get_int(state, 1);
     } else if (state->current == "--profile") {
         pop_option_arg(state);
         options->profiler_loc = state->current;

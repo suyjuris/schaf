@@ -36,7 +36,7 @@ bool global_interrupt_flag = false;
 extern "C" void handle_signal_sigint(int sig) {
     assert(sig == SIGINT);
     if (global_interrupt_flag) {
-        die("Error: Caught interrupt (again)");
+        die("Caught interrupt (again)");
     }
     jerr << "Caught interrupt, cleaning up... (send again to exit immediately)\n";
     global_interrupt_flag = true;
