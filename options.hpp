@@ -5,15 +5,17 @@
 
 namespace jup {
 
+#define JUP_DEFAULT_EDGES_MIN 10
+#define JUP_DEFAULT_EDGES_MAX 50000000
 #define JUP_DEFAULT_ITER_SAVE 5000
-#define JUP_DEFAULT_ITER_EVENT 100
+#define JUP_DEFAULT_ITER_EVENT 1000
 #define JUP_DEFAULT_LOGDIR "tf_data"
 #define JUP_DEFAULT_GRID_MAX_TIME 30.0
 #define JUP_DEFAULT_SAMPLES 8
 
 struct Schaf_options {
-    int graph_min_edges = 0;
-    int graph_max_edges = std::numeric_limits<int>::max();
+    int graph_min_edges = JUP_DEFAULT_EDGES_MIN;
+    int graph_max_edges = JUP_DEFAULT_EDGES_MAX;
     Hyperparam hyp;
     jup_str param_in;
     int iter_max = std::numeric_limits<int>::max();

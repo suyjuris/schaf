@@ -5,6 +5,7 @@
 
 ifeq ($(OS),Windows_NT)
   MODE = WINDOWS
+  $(error This application does not build under Windows!)
 else
   MODE = LINUX
 endif
@@ -28,23 +29,14 @@ else
   CXXFLAGS += -O0
 endif
 
-ifeq ($(MODE),WINDOWS)
-  LIBS += -lWs2_32 -lversion -static-libstdc++ -static-libgcc
-else
-  LDFLAGS += -rdynamic
-endif
+LDFLAGS += -rdynamic
 
 ifeq ($(USE_PROFILER),1)
   LIBS += -lprofiler
   CPPFLAGS += -DJUP_USE_PROFILER
 endif
 
-ifeq ($(MODE),WINDOWS)
-  EXEEXT = .exe
-  CV2PDB = cv2pdb
-else
-  EXEEXT =
-endif
+EXEEXT =
 
 ifeq ($(SCHAF_FAST),1)
   SUFFIX = _fast
@@ -58,9 +50,6 @@ PRE_HEADER = $(TMPDIR)/global$(SUFFIX).hpp.gch
 TARGET_NAME = $(TARGET)$(SUFFIX)$(EXEEXT)
 
 TMPFILES = *~ $(TARGET_NAME)
-ifeq ($(MODE),WINDOWS)
-  TMPFILES += $(TARGET)$(SUFFIX).pdb
-endif
 
 .PHONY: default all clean print_config init distclean
 .SUFFIXES:
@@ -92,21 +81,18 @@ print_config:
 	@echo "CXXFLAGS: $(CXXFLAGS)"
 	@echo "LDFLAGS:  $(LDFLAGS)"
 
-init:
+init: $(TMPDIR)/mark_initialised
+
+$(TMPDIR)/mark_initialised: $(LIBDIR)/tensorflow_linux.tar.bz2
 	mkdir -p $(TMPDIR)/include_linux
 	tar -xjf $(LIBDIR)/tensorflow_linux.tar.bz2 -C $(TMPDIR)/include_linux
-ifeq ($(MODE),WINDOWS)
-	mkdir -p /usr/local/bin
-	wget https://ci.appveyor.com/api/projects/rainers/visuald/artifacts/cv2pdb.exe?job=Environment%\
-	3A%20os%3DVisual%20Studio%202013%2C%20VS%3D12%2C%20APPVEYOR_BUILD_WORKER_IMAGE%3DVisual%20Studi\
-	o%202015 -O /usr/local/bin/cv2pdb.exe
-endif
+	touch $(TMPDIR)/mark_initialised
 
 $(PRE_HEADER): global.hpp
 	@mkdir -p $(TMPDIR) $(TMPDIR)/$(LIBDIR)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $< -o $@
 
-$(TMPDIR)/%$(SUFFIX).d: %.cpp $(HEADERS)
+$(TMPDIR)/%$(SUFFIX).d: %.cpp $(HEADERS) $(TMPDIR)/mark_initialised
 	@mkdir -p $(TMPDIR) $(TMPDIR)/$(LIBDIR)
 	@set -e; $(CXX) -MM $(CPPFLAGS) $< | sed 's,\($*\)\.o[ :]*,$(TMPDIR)/\1$(SUFFIX).o $@ : ,g' > $@;
 
@@ -120,16 +106,8 @@ default: $(TARGET_NAME)
 
 .PRECIOUS: $(TARGET_NAME) $(OBJECTS)
 
-ifeq ($(MODE),WINDOWS)
-$(TMPDIR)/$(TARGET_NAME): $(OBJECTS)
-	$(CXX) $(OBJECTS) $(LDFLAGS) $(LIBS) -o $@
-
-$(TARGET_NAME): $(TMPDIR)/$(TARGET_NAME)
-	$(CV2PDB) -C $< $@
-else
 $(TARGET_NAME): $(OBJECTS)
 	$(CXX) $(OBJECTS) $(LDFLAGS) $(LIBS) -o $@
-endif
 
 clean:
 	-rm -f $(TMPFILES) $(TMPDIR)/*.* $(TMPDIR)/$(LIBDIR)/*.*

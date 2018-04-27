@@ -51,6 +51,15 @@ Status FloorGrad(const Scope& scope, const Operation& op, const std::vector<Outp
 }
 REGISTER_GRADIENT_OP("Floor", FloorGrad);
 
+Status SoftmaxCrossEntropyWithLogitsGrad(const Scope& scope, const Operation& op, const std::vector<Output>& grad_inputs,
+        std::vector<Output>* grad_outputs) {
+    auto softmax_grad = op.output(1);
+    grad_outputs->push_back(Mul(scope, softmax_grad, Stack(scope, {grad_inputs[0]}, Stack::Axis(-1))));
+    grad_outputs->push_back(NoGradient());
+    return scope.status();
+}
+REGISTER_GRADIENT_OP("SoftmaxCrossEntropyWithLogits", SoftmaxCrossEntropyWithLogitsGrad);
+
 }
 } /* end of namespace ops */
 } /* end of namespace tensorflow */
@@ -116,26 +125,69 @@ Batch_data Training_data::instance(int index) {
     return {b.edge_weights.subview(i_i * n, n), b.results.subview(i_i, 1)};
 }
 
-Unique_ptr_free<Training_data> Training_data::make_unique(Hyperparam hyp) {
+Unique_ptr_free<Training_data> Training_data::make_unique(Hyperparam hyp, int realign_min_batchsize) {
+    assert(realign_min_batchsize >= 0);
+    
     if (not hyp.valid()) {
         print_hyperparam(hyp);
         die("Invalid hyperparameters in Training_data::make_unique! Something has gone horribly wrong...");
     }
-    u64 size = sizeof(Training_data) + hyp.bytes_total();
+
+    u64 size = sizeof(Training_data);
+    if (realign_min_batchsize) {
+        s64 max_batch_count = hyp.num_instances() / realign_min_batchsize;
+        size += hyp.floats_batch() * hyp.batch_count * sizeof(float) + hyp.alignment() * max_batch_count;
+    } else {
+        size += hyp.bytes_total();
+    }
+    
     void* ptr = aligned_alloc(hyp.alignment(), size);
     std::memset(ptr, 0, size);
     Unique_ptr_free<Training_data> result {(Training_data*)ptr};
     result->hyp = hyp;
-    result->batch_data.m_size = hyp.floats_total();
+    result->batch_data.m_size = (size - sizeof(Training_data)) / sizeof(float);
     return result;
 }
+
+struct Allocator_Zero_copy: public tensorflow::Allocator {
+    void* ptr = nullptr;
+    u64 size = 0;
+
+    Allocator_Zero_copy() {}
+    
+    template <typename T>
+    Allocator_Zero_copy(Array_view_mut<T> arr) {
+        ptr = arr.begin();
+        size = arr.size() * sizeof(T);
+    }
+
+    std::string Name() override { return "Allocator_Zero_Copy"; }
+    
+    void* AllocateRaw(size_t alignment, size_t num_bytes) override {
+        assert((u64)ptr % alignment == 0);
+        assert(num_bytes == size);
+        if ((u64)ptr % alignment == 0 and num_bytes == size) {
+            return ptr;
+        }
+        return nullptr;
+    }
+
+    void DeallocateRaw(void* ptr) override {}
+};
+
+struct Batch_tensors {
+    tensorflow::Tensor data_x, data_y;
+    Allocator_Zero_copy data_x_alloc, data_y_alloc;
+};
 
 #define UNINITIALIZED(x) union {char JUP_UNIQUE_NAME(__dummy) = 0; x;}
 
 struct Network_state {
     Network_state(): root {tensorflow::Scope::NewRootScope()} {}
     ~Network_state() {
-        event_writer.~EventsWriter();
+        if (event_writer_initialised) {
+            event_writer.~EventsWriter();
+        }
         session.~ClientSession();
     }
 
@@ -145,7 +197,7 @@ struct Network_state {
     
     tensorflow::Operation update_op, save_op, restore_op, decay_op, dropout_on_op, dropout_off_op,
         print_op;
-    tensorflow::Output x, y, y_out, rate, loss, summary_op;
+    tensorflow::Output x, y, y_prob, rate, summary_op, loss_train, loss_train_avg, loss_test, loss_comp, f1_score;
     
     std::vector<tensorflow::Output> params;
 
@@ -154,13 +206,17 @@ struct Network_state {
     int epoch_start = 0;
 
     Timer timer;
-    float loss_sum = 0;
-    int loss_count = 0;
+    float loss_sum1 = 0.f;
+    float loss_sum2 = 0.f;
+    int loss_count1 = 0;
+    int loss_count2 = 0;
+    Batch_tensors last_batch;
 
     std::string save_path;
 
     UNINITIALIZED( tensorflow::ClientSession session     );
     UNINITIALIZED( tensorflow::EventsWriter event_writer );
+    bool event_writer_initialised = false;
 
     u64 last_id = 0;
     int next_seed() {
@@ -185,7 +241,18 @@ static tensorflow::Output Dropout(Network_state* state, tensorflow::Input x, ten
     return Mul(dropout, Div(dropout, x, p), binary);
 }
 
-Network_state* network_init(Hyperparam hyp) {
+static tensorflow::Output BinarySoftmaxCrossEntropy(tensorflow::Scope scope, tensorflow::Input logits, tensorflow::Input label) {
+    using namespace tensorflow;
+    using namespace tensorflow::ops;
+    
+    Input bin_pos = Mul(scope, Add(scope, label,  1.f),  0.5f);
+    Input bin_neg = Mul(scope, Add(scope, label, -1.f), -0.5f);
+    Input logits_ = Mul(scope, logits, -1.f);
+    auto softmax = SoftmaxCrossEntropyWithLogits(scope, Stack(scope, {logits, logits_}, Stack::Axis(-1)), Stack(scope, {bin_pos, bin_neg}, Stack::Axis(-1)));
+    return Sum(scope, softmax.loss, {0});
+}
+
+Network_state* network_init(Hyperparam hyp, bool disable_saving) {
     using namespace tensorflow;
     using namespace tensorflow::ops;
 
@@ -228,13 +295,20 @@ Network_state* network_init(Hyperparam hyp) {
     auto b1tmp = Reshape(root, a2out, {hyp.batch_size, hyp.recf_count * hyp.a2_size});
     auto b1out = Dropout(state, Tanh(name("b1out"), BiasAdd(root, MatMul(root, b1tmp, b1w), b1b)), drop);
     auto b2out = Dropout(state, Tanh(name("b2out"), BiasAdd(root, MatMul(root, b1out, b2w), b2b)), drop);
-    auto y_out = Reshape(root, Tanh(name("y_out"), BiasAdd(root, MatMul(root, b2out, b3w), b3b)), {hyp.batch_size});
-    
+    //auto y_out = Reshape(root, Tanh(name("y_out"), BiasAdd(root, MatMul(root, b2out, b3w), b3b)), {hyp.batch_size});
+    //auto y_prob = y_out;
+    auto y_out = Reshape(root, BiasAdd(name("y_out"), MatMul(root, b2out, b3w), b3b), {hyp.batch_size});
+    auto y_prob = Add(name("y_prob"), Mul(root, Sigmoid(root, y_out), 2.f), -1.f);
+
+    s64 num_parameters = hyp.edges_recf() * hyp.a1_size + hyp.a1_size + hyp.a1_size * hyp.a2_size
+        + hyp.a2_size + hyp.a2_size * hyp.recf_count * hyp.b1_size + hyp.b1_size + hyp.b1_size * hyp.b2_size
+        + hyp.b2_size + hyp.b2_size * hyp.b3_size + hyp.b3_size;
     auto loss = Add(name("loss"),
-        Mul(root, L2Loss(root, Sub(root, y_out, y)), batch_size_inv),
+        //Mul(root, L2Loss(root, Sub(root, y_out, y)), batch_size_inv),
+        Mul(root, BinarySoftmaxCrossEntropy(root, y_out, y), batch_size_inv),
         Mul(root, AddN(root, std::initializer_list<Output> {
             L2Loss(root, a1w), L2Loss(root, a2w), L2Loss(root, b1w), L2Loss(root, b2w), L2Loss(root, b3w)
-        }), hyp.l2_reg)
+        }), hyp.l2_reg / num_parameters)
     );
 
     // Update
@@ -253,22 +327,31 @@ Network_state* network_init(Hyperparam hyp) {
     // Summaries
     auto summary = root.NewSubScope("summary");
     std::vector<Output> summary_ops;
+
+    state->loss_train_avg = Placeholder(name("loss_train_avg"), DT_FLOAT, Placeholder::Shape({}));
+    state->loss_test      = Placeholder(name("loss_test"),      DT_FLOAT, Placeholder::Shape({}));
+    state->loss_comp      = Placeholder(name("loss_comp"),      DT_FLOAT, Placeholder::Shape({}));
+    state->f1_score       = Placeholder(name("f1_score"),       DT_FLOAT, Placeholder::Shape({}));
+    
     auto add_summary = [&summary_ops](Output out) { summary_ops.push_back(out); };
-    add_summary( ScalarSummary(   root, std::string {"s_loss"}, loss)  );
-    add_summary( ScalarSummary(   root, std::string {"s_rate"}, rate)  );
-    add_summary( HistogramSummary(root, std::string {"s_x"},    x)     );
-    add_summary( HistogramSummary(root, std::string {"s_y"},    y)     );
-    add_summary( HistogramSummary(root, std::string {"s_yout"}, y_out) );
-    add_summary( HistogramSummary(root, std::string {"s_a1w"}, a1w)    );
-    add_summary( HistogramSummary(root, std::string {"s_a1b"}, a1b)    );
-    add_summary( HistogramSummary(root, std::string {"s_a2w"}, a2w)    );
-    add_summary( HistogramSummary(root, std::string {"s_a2b"}, a2b)    );
-    add_summary( HistogramSummary(root, std::string {"s_b1w"}, b1w)    );
-    add_summary( HistogramSummary(root, std::string {"s_b1b"}, b1b)    );
-    add_summary( HistogramSummary(root, std::string {"s_b2w"}, b2w)    );
-    add_summary( HistogramSummary(root, std::string {"s_b2b"}, b2b)    );
-    add_summary( HistogramSummary(root, std::string {"s_b3w"}, b3w)    );
-    add_summary( HistogramSummary(root, std::string {"s_b3b"}, b3b)    );
+    add_summary( ScalarSummary(root, std::string {"s_rate"}, rate));
+    add_summary( ScalarSummary(root, std::string {"s_loss_train"}, state->loss_train_avg));
+    add_summary( ScalarSummary(root, std::string {"s_loss_test"},  state->loss_test     ));
+    add_summary( ScalarSummary(root, std::string {"s_loss_comp"},  state->loss_comp     ));
+    add_summary( ScalarSummary(root, std::string {"s_f1_score"},   state->f1_score      ));
+    add_summary( HistogramSummary(root, std::string {"s_x"},    x)    );
+    add_summary( HistogramSummary(root, std::string {"s_y"},    y)    );
+    add_summary( HistogramSummary(root, std::string {"s_yout"}, y_out));
+    add_summary( HistogramSummary(root, std::string {"s_a1w"}, a1w)   );
+    add_summary( HistogramSummary(root, std::string {"s_a1b"}, a1b)   );
+    add_summary( HistogramSummary(root, std::string {"s_a2w"}, a2w)   );
+    add_summary( HistogramSummary(root, std::string {"s_a2b"}, a2b)   );
+    add_summary( HistogramSummary(root, std::string {"s_b1w"}, b1w)   );
+    add_summary( HistogramSummary(root, std::string {"s_b1b"}, b1b)   );
+    add_summary( HistogramSummary(root, std::string {"s_b2w"}, b2w)   );
+    add_summary( HistogramSummary(root, std::string {"s_b2b"}, b2b)   );
+    add_summary( HistogramSummary(root, std::string {"s_b3w"}, b3w)   );
+    add_summary( HistogramSummary(root, std::string {"s_b3b"}, b3b)   );
     state->summary_op = MergeSummary(name("run"), summary_ops);
 
     // Printing
@@ -313,7 +396,7 @@ Network_state* network_init(Hyperparam hyp) {
     for (int i = 0; i < (int)params_op.size(); ++i) {
         params_name.flat<std::string>()(i) = params_str[i];
     }
-    if (global_options.logdir and global_options.iter_save) {
+    if (not disable_saving and global_options.logdir and global_options.iter_save) {
         std__filesystem::path path {global_options.logdir.c_str()};
         path /= get_date_string().c_str();
         std::error_code ec;
@@ -349,7 +432,7 @@ Network_state* network_init(Hyperparam hyp) {
     event.set_step(state->step);
     event.set_graph_def(graph_data);
 
-    if (global_options.logdir and global_options.iter_event) {
+    if (not disable_saving and global_options.logdir and global_options.iter_event) {
         std__filesystem::path path {global_options.logdir.c_str()};
         path /= get_date_string().c_str();
         std::error_code ec;
@@ -360,6 +443,7 @@ Network_state* network_init(Hyperparam hyp) {
 
         new (&state->event_writer) EventsWriter {(path / "run").native()};
         assert( state->event_writer.Init() );
+        state->event_writer_initialised = true;
         state->event_writer.WriteEvent(event);
     }
 
@@ -369,55 +453,24 @@ Network_state* network_init(Hyperparam hyp) {
     // Initialize session
     new (&state->session) ClientSession {root, session_options};
 
-    state->x     = x;
-    state->y     = y;
-    state->y_out = y_out;
-    state->rate  = rate;
-    state->loss  = loss;
+    state->x           = x;
+    state->y           = y;
+    state->y_prob      = y_prob;
+    state->rate        = rate;
+    state->loss_train  = loss;
     
     state->session.Run({}, {}, {init_op}, nullptr);
 
     return state;
 }
 
-struct Allocator_Zero_copy: public tensorflow::Allocator {
-    void* ptr = nullptr;
-    u64 size = 0;
-
-    Allocator_Zero_copy() {}
-    
-    template <typename T>
-    Allocator_Zero_copy(Array_view_mut<T> arr) {
-        ptr = arr.begin();
-        size = arr.size() * sizeof(T);
-    }
-
-    std::string Name() override { return "Allocator_Zero_Copy"; }
-    
-    void* AllocateRaw(size_t alignment, size_t num_bytes) override {
-        assert((u64)ptr % alignment == 0);
-        assert(num_bytes == size);
-        if ((u64)ptr % alignment == 0 and num_bytes == size) {
-            return ptr;
-        }
-        return nullptr;
-    }
-
-    void DeallocateRaw(void* ptr) override {}
-};
-
 static void hyp_init_alignment(Hyperparam* hyp) {
     hyp->_alignment = tensorflow::Allocator::kAllocatorAlignment;
     if (hyp->_alignment % sizeof(float) != 0) {
-        // Can just set the alignment to a multiple that does...
+        // Could just set the alignment to a multiple that does...
         die("Somehow tensorflow alignment does not include float alignment.");
     }
 }
-
-struct Batch_tensors {
-    tensorflow::Tensor data_x, data_y;
-    Allocator_Zero_copy data_x_alloc, data_y_alloc;
-};
 
 static void fill_tensors(Hyperparam hyp, Batch_data const& batch, Batch_tensors* into) {
     using namespace tensorflow;
@@ -451,7 +504,7 @@ static void network_batch(Network_state* state, Batch_data const& data, bool sil
 
     auto hyp = state->hyp;
 
-    Batch_tensors tensors;
+    Batch_tensors& tensors = state->last_batch;
     fill_tensors(hyp, data, &tensors);
 
     if (hyp.learning_rate_decay
@@ -472,53 +525,70 @@ static void network_batch(Network_state* state, Batch_data const& data, bool sil
     std::vector<Tensor> outputs;
     TF_CHECK_OK(state->session.Run(
         {{state->x, tensors.data_x}, {state->y, tensors.data_y}},
-        {state->loss},
+        {state->loss_train},
         {state->update_op},
         &outputs
     ));
 
-    state->loss_sum += outputs[0].scalar<float>()();
-    state->loss_count++;
-    
-    if (global_options.iter_event and state->step % global_options.iter_event == 0) {
-        outputs.clear();
-        TF_CHECK_OK(state->session.Run(
-            {{state->x, tensors.data_x}, {state->y, tensors.data_y}},
-            {state->summary_op},
-            {},
-            &outputs
-        ));
-        
-        Event event;
-        event.set_wall_time(elapsed_time());
-        event.set_step(state->step);
-        event.mutable_summary()->ParseFromString(outputs[0].scalar<std::string>()());
-        state->event_writer.WriteEvent(event);
-    }
+    state->loss_sum1 += outputs[0].scalar<float>()();
+    state->loss_count1++;
+
+    state->loss_sum2 += outputs[0].scalar<float>()();
+    state->loss_count2++;
 }
 
 struct Network_validate_result {
     float loss_test       = 0.f; // Average loss on the test dataset
-    float loss_test_l2    = 0.f; // Average L2 loss on the test dataset
-    float false_positive  = 0.f; // Percentage of wrongly rejected instances (for cutoff of 0.5)
-    float false_negative  = 0.f; // Percentage of wrongly accepted instances (for cutoff of 0.5)
-    float false_random    = 0.f; // Like false_negative, but only consider the random instances
-    float false_perturbed = 0.f; // Like false_negative, but only consider the perturbed instances
+    float loss_test_l2    = 0.f; // Average MSE on the test dataset
+    
+    float false_negative  = 0.f; // Percentage of wrongly rejected instances (for cutoff of 0.5)
+    float false_positive  = 0.f; // Percentage of wrongly accepted instances (for cutoff of 0.5)
+    float wrong_random    = 0.f; // Like false_positive, but only consider the random instances
+    float wrong_perturbed = 0.f; // Like false_positive, but only consider the perturbed instances
+
+    float total_negative    = 0.f;
+    float total_positive    = 0.f;
+    float total_random      = 0.f;
+    float total_perturbed   = 0.f;
+
+    float false_negative_frac()  const { return false_negative  / total_negative;  }
+    float false_positive_frac()  const { return false_positive  / total_positive;  }
+    float wrong_random_frac()    const { return wrong_random    / total_random;    }
+    float wrong_perturbed_frac() const { return wrong_perturbed / total_perturbed; }
+
+    float precision() const {
+        return 1.f - false_positive / total_positive;
+    }
+    float recall() const {
+        return 1.f - false_negative / (total_positive - false_positive + false_negative);
+    }
+    float f1_score() const {
+        return 2 * precision() * recall() / (precision() + recall());
+    }
 
     void print(std::ostream& out) {
         out << "  Loss (validation): " << jup_printf("%.4f\n", (double)loss_test)
             << "  Loss (valid.,l2):  " << jup_printf("%.4f\n", (double)loss_test_l2)
-            << "  False positives:   " << jup_printf("%.4f\n", (double)false_positive)
-            << "  False negatives:   " << jup_printf("%.4f\n", (double)false_negative)
-            << "  False random:      " << jup_printf("%.4f\n", (double)false_random)
-            << "  False perturbed:   " << jup_printf("%.4f\n", (double)false_perturbed);
+            << "  False negatives:   " << jup_printf("%.4f (%.0f/%.0f)\n", (double)false_negative_frac(),
+                (double)false_negative,  (double)total_negative)
+            << "  False positives:   " << jup_printf("%.4f (%.0f/%.0f)\n", (double)false_positive_frac(),
+                (double)false_positive,  (double)total_positive)
+            << "  Wrong positive:    " << jup_printf("%.4f (%.0f/%.0f)\n", (double)(1.f - recall()),
+                (double)false_negative,    (double)(total_positive - false_positive + false_negative))
+            << "  Wrong random:      " << jup_printf("%.4f (%.0f/%.0f)\n", (double)wrong_random_frac(),
+                (double)wrong_random,    (double)total_random)
+            << "  Wrong perturbed:   " << jup_printf("%.4f (%.0f/%.0f)\n", (double)wrong_perturbed_frac(),
+                (double)wrong_perturbed, (double)total_perturbed)
+            << "  Precision:         " << jup_printf("%.4f\n", (double)precision())
+            << "  Recall:            " << jup_printf("%.4f\n", (double)recall())
+            << "  F1-score:          " << jup_printf("%.4f\n", (double)f1_score());
     }
 };
 
 static Network_validate_result network_validate(Network_state* state, Training_data /*const*/& data_test) {
     using namespace tensorflow;
     
-    Network_validate_result result, counts;
+    Network_validate_result result;
     
     // Need to turn off dropout during validation
     TF_CHECK_OK(state->session.Run({}, {}, {state->dropout_off_op}, nullptr));
@@ -529,7 +599,7 @@ static Network_validate_result network_validate(Network_state* state, Training_d
         fill_tensors(data_test.hyp, data_test.batch(i), &tensors);
         TF_CHECK_OK(state->session.Run(
             {{state->x, tensors.data_x}, {state->y, tensors.data_y}},
-            {state->loss, state->y_out},
+            {state->loss_train, state->y_prob},
             {},
             &outputs
         ));
@@ -543,27 +613,51 @@ static Network_validate_result network_validate(Network_state* state, Training_d
             if (res_real[i] == 0) continue;
             assert(res_real[i] == 1.f or res_real[i] == -1.f or res_real[i] == f);
             result.loss_test_l2    += 0.5 * std::pow(res_real[i] - res_yout(i), 2.0);
-            result.false_positive  += res_real[i] ==  1.f and res_yout(i) <= 0.f;
-            result.false_negative  += res_real[i] <=    f and res_yout(i) >  0.f;
-            result.false_random    += res_real[i] == -1.f and res_yout(i) >  0.f;
-            result.false_perturbed += res_real[i] ==    f and res_yout(i) >  0.f;
-            counts.false_positive  += res_real[i] ==  1.f;
-            counts.false_negative  += res_real[i] <=    f;
-            counts.false_random    += res_real[i] == -1.f;
-            counts.false_perturbed += res_real[i] ==    f;
+            result.false_negative  += res_real[i] ==  1.f and res_yout(i) <= 0.f;
+            result.false_positive  += res_real[i] <=    f and res_yout(i) >  0.f;
+            result.wrong_random    += res_real[i] == -1.f and res_yout(i) >  0.f;
+            result.wrong_perturbed += res_real[i] ==    f and res_yout(i) >  0.f;
+            result.total_negative  += res_yout(i) <= 0.f;
+            result.total_positive  += res_yout(i) >  0.f;
+            result.total_random    += res_real[i] == -1.f;
+            result.total_perturbed += res_real[i] ==    f;
         }
     }
     
     TF_CHECK_OK(state->session.Run({}, {}, {state->dropout_on_op}, nullptr));
 
-    result.loss_test       /= data_test.hyp.batch_count;
-    result.loss_test_l2    /= data_test.hyp.num_instances();
-    result.false_positive  /= counts.false_positive;
-    result.false_negative  /= counts.false_negative;
-    result.false_random    /= counts.false_random;
-    result.false_perturbed /= counts.false_perturbed;
+    result.loss_test    /= data_test.hyp.batch_count;
+    result.loss_test_l2 /= data_test.hyp.num_instances();
     
     return result;
+}
+
+static void network_summary(Network_state* state, Training_data /*const*/& data_test) {
+    using namespace tensorflow;
+    
+    assert(state);
+
+    auto vali = network_validate(state, data_test);
+
+    float loss_train = state->loss_sum2 / state->loss_count2;
+    state->loss_sum2 = 0.f;
+    state->loss_count2 = 0;
+
+    std::vector<Tensor> outputs;
+    TF_CHECK_OK(state->session.Run(
+        {{state->x, state->last_batch.data_x}, {state->y, state->last_batch.data_y},
+         {state->loss_train_avg, loss_train}, {state->loss_test, vali.loss_test},
+         {state->loss_comp, vali.loss_test_l2}, {state->f1_score, vali.f1_score()}},
+        {state->summary_op},
+        {},
+        &outputs
+    ));
+    
+    Event event;
+    event.set_wall_time(elapsed_time());
+    event.set_step(state->step);
+    event.mutable_summary()->ParseFromString(outputs[0].scalar<std::string>()());
+    state->event_writer.WriteEvent(event);
 }
 
 void network_save(Network_state* state) {
@@ -1013,8 +1107,7 @@ void async_shuffle_init(Async_shuffler* shuffler) {
         }
     };
 
-    std::mutex dummy;
-    std::unique_lock<std::mutex> lock {dummy};
+    std::unique_lock<std::mutex> lock {shuffler->shuffling};
     
     shuffler->keep_alive = true;
     shuffler->received_params = false;
@@ -1075,7 +1168,7 @@ void network_train(jup_str data_file) {
     Async_shuffler shuffler;
     async_shuffle_init(&shuffler);
     async_shuffle_start(&shuffler, data_train.get(), data_tmp.get(), 0);
-    
+
     jout << "Training..." << endl;
     //int initial_step = state->step;
     int cur_batch = 0;
@@ -1083,15 +1176,6 @@ void network_train(jup_str data_file) {
         network_batch(state, data_train->batch(cur_batch), false);
         ++cur_batch;
         
-        if (cur_batch >= data_train->hyp.batch_count) {
-            async_shuffle_wait(&shuffler);
-            std::swap(data_train, data_tmp);
-            async_shuffle_start(&shuffler, data_train.get(), data_tmp.get(), 0);
-            cur_batch = 0;
-            ++state->epoch;
-            state->epoch_start = state->step;
-        }
-
         if (state->step
             and global_options.iter_save
             and global_options.logdir
@@ -1100,21 +1184,37 @@ void network_train(jup_str data_file) {
             network_save(state);
         }
 
+        if (state->step
+            and global_options.iter_event
+            and state->step % global_options.iter_event == 0
+        ) {
+            network_summary(state, *data_test);
+        }
+
+        if (cur_batch >= data_train->hyp.batch_count) {
+            async_shuffle_wait(&shuffler);
+            std::swap(data_train, data_tmp);
+            async_shuffle_start(&shuffler, data_train.get(), data_tmp.get(), 0);
+            cur_batch = 0;
+            ++state->epoch;
+            state->epoch_start = state->step;
+        }
+        
         if (state->timer.update()) {
             auto vali = network_validate(state, *data_test);
             jout << jup_printf(
-                "  Loss: %.4f train, %.4f test, %.4f comp, (false pos/neg/rand/per: %.2f/%.2f/%.2f/%.2f",
-                (double)(state->loss_sum / state->loss_count), (double)vali.loss_test,
-                (double)vali.loss_test_l2, (double)vali.false_positive, (double)vali.false_negative,
-                (double)vali.false_random, (double)vali.false_perturbed
+                "  Loss: %.4f train, %.4f test, %.4f comp, (errors pos/rand/per: %.2f/%.2f/%.2f",
+                (double)(state->loss_sum1 / state->loss_count1), (double)vali.loss_test,
+                (double)vali.loss_test_l2, (double)(1.f - vali.recall()),
+                (double)vali.wrong_random_frac(), (double)vali.wrong_perturbed_frac()
             ) << ", epoch " << state->epoch << ", iteration " << state->step;
             if (global_options.iter_max < std::numeric_limits<int>::max()) {
                 jout << "/" << global_options.iter_max;
             }
             jout << ", " << state->timer.counter(state->step) << " iter/s)" << endl;
 
-            state->loss_sum = 0;
-            state->loss_count = 0;
+            state->loss_sum1 = 0;
+            state->loss_count1 = 0;
         }
 
         if (global_interrupt_flag) break;
@@ -1129,7 +1229,7 @@ void network_train(jup_str data_file) {
     
     auto vali = network_validate(state, *data_test);
     jout << "Final results:\n"
-         << "  Loss (training):   " << jup_printf("%.4f\n", state->loss_sum / state->loss_count);
+         << "  Loss (training):   " << jup_printf("%.4f\n", state->loss_sum1 / state->loss_count1);
     vali.print(jout);
     jout << "  Total time:        " << state->timer.total() << '\n'
          << "  Total iterations:  " << state->step << '\n'
@@ -1187,17 +1287,17 @@ void network_print_data_info(jup_str data_file) {
 }
 
 void network_random_hyp(Hyperparam* hyp, Rng* rng) {
-    /*int inst_total = hyp->num_instances();
-    hyp->batch_size = rng->gen_uni(64, 257);
+    int inst_total = hyp->num_instances();
+    hyp->batch_size = rng->gen_uni(64, 512 + 1);
     hyp->batch_count = inst_total / hyp->batch_size;
     
-    hyp->learning_rate = rng->gen_uni_float() * 0.24 + 0.03;
-    hyp->learning_rate_decay = rng->gen_uni(20, 100);
+    hyp->learning_rate = rng->gen_uni_float() * 0.32 + 0.03;
+    hyp->learning_rate_decay = rng->gen_uni(10, 120);
     
-    hyp->a1_size = rng->gen_uni(2,  48 + 1);
-    hyp->a2_size = rng->gen_uni(2,  32 + 1);
-    hyp->b1_size = rng->gen_uni(8, 128 + 1);
-    hyp->b2_size = rng->gen_uni(2,  48 + 1);
+    hyp->a1_size = rng->gen_uni(2,  128 + 1);
+    hyp->a2_size = rng->gen_uni(2,  128 + 1);
+    hyp->b1_size = rng->gen_uni(2,  128 + 1);
+    hyp->b2_size = rng->gen_uni(2,  128 + 1);
 
     hyp->dropout = rng->gen_uni_float()*0.5 + 0.5;
 
@@ -1206,9 +1306,9 @@ void network_random_hyp(Hyperparam* hyp, Rng* rng) {
     hyp->b1_size /= hyp->dropout;
     hyp->b2_size /= hyp->dropout;
     
-    hyp->l2_reg = rng->gen_uni_float() * 0.002;
-    */
-    int inst_total = hyp->num_instances();
+    hyp->l2_reg = rng->gen_uni_float() * 50;
+    
+    /*int inst_total = hyp->num_instances();
     hyp->batch_size = rng->gen_uni(100, 351);
     hyp->batch_count = inst_total / hyp->batch_size;
     
@@ -1227,7 +1327,7 @@ void network_random_hyp(Hyperparam* hyp, Rng* rng) {
     hyp->b1_size /= hyp->dropout;
     hyp->b2_size /= hyp->dropout;
     
-    hyp->l2_reg = rng->gen_uni_float() * 0.0002;
+    hyp->l2_reg = rng->gen_uni_float()*50;*/
 }
 
 void network_grid_search(jup_str data_file) {
@@ -1243,9 +1343,9 @@ void network_grid_search(jup_str data_file) {
     
     Unique_ptr_free<Training_data> data_train, data_test, data_train_tmp, data_train_tmp2, data_test_tmp;
     network_load_data(data_file, hyp, &data_train, &data_test);
-    data_train_tmp  = Training_data::make_unique(data_train->hyp);
-    data_train_tmp2 = Training_data::make_unique(data_train->hyp);
-    data_test_tmp   = Training_data::make_unique(data_test ->hyp);
+    data_train_tmp  = Training_data::make_unique(data_train->hyp, 32);
+    data_train_tmp2 = Training_data::make_unique(data_train->hyp, 32);
+    data_test_tmp   = Training_data::make_unique(data_test ->hyp, 32);
 
     jout << '\n';
     jout << "  trai | test | comp | iter | batch |  rate  | decay | a1 | a2 | b1 | b2 | dropout | l2\n";
@@ -1268,7 +1368,7 @@ void network_grid_search(jup_str data_file) {
         async_shuffle_start(&shuffler, data_train.get(), data_train_tmp.get(), 0);
         network_shuffle(data_test.get(), data_test_tmp.get(), 0, true);
         
-        auto state = network_init(hyp_rand);
+        auto state = network_init(hyp_rand, true);
         double start_time = elapsed_time();
         int cur_batch = 0;
         
@@ -1287,6 +1387,9 @@ void network_grid_search(jup_str data_file) {
                 cur_batch = 0;
                 ++state->epoch;
                 state->epoch_start = state->step;
+                
+                state->loss_sum1 = 0.f;
+                state->loss_count1 = 0;
             }
 
             if (global_interrupt_flag) break;
@@ -1298,7 +1401,7 @@ void network_grid_search(jup_str data_file) {
         auto vali = network_validate(state, *data_test_tmp);
         double loss_test     = vali.loss_test;
         double loss_test_l2  = vali.loss_test_l2;
-        double loss_train    = state->loss_sum / state->loss_count;
+        double loss_train    = state->loss_sum1 / state->loss_count1;
 
         if (loss_test_l2 < best_loss) {
             best_loss = loss_test_l2;
@@ -1411,7 +1514,7 @@ void network_classify(jup_str graph_file) {
         outputs.clear();
         TF_CHECK_OK(state->session.Run(
             {{state->x, tensors.data_x}},
-            {state->y_out},
+            {state->y_prob},
             {},
             &outputs
         ));

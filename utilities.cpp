@@ -79,7 +79,8 @@ jup_str _print_error_msg(jup_str msg) {
 // see header
 void die(jup_str msg) {
     if (msg) {
-        jerr << "Error: " << _print_error_msg(msg) << '\n';
+        auto msg_mod = _print_error_msg(msg);
+        jerr << "Error: " << msg_mod << '\n';
     }
     die();
 }
@@ -904,11 +905,15 @@ void load_bytes_object(jup_str path, char* into, s64 obj_size, s64 extra_bytes) 
     }
 }
 
-void load_bytes_buffer(jup_str path, Buffer* into, s64 maxsize) {
+void load_bytes_buffer(jup_str path, Buffer* into, s64 maxsize, bool binary) {
     assert(maxsize >= -1);
     
     std::ifstream i;
-    i.open(path.c_str(), std::ios::ate | std::ios::binary);
+    if (binary) {
+        i.open(path.c_str(), std::ios::ate | std::ios::binary);
+    } else {
+        i.open(path.c_str(), std::ios::ate);
+    }
     if (not i.good()) {
         die("?errno while trying to open file %s", path);
     }
@@ -930,6 +935,7 @@ void load_bytes_buffer(jup_str path, Buffer* into, s64 maxsize) {
     if (not i.good()) {
         die("?errno while trying to read file %s", path);
     }
+    into->addsize(pos);
 }
 
 u64 get_file_size(jup_str path) {

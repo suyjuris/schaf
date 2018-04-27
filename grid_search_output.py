@@ -10,7 +10,7 @@ import sys
 import subprocess
 
 if len(sys.argv) != 3:
-    print('Usage:\n  %s <input> <output-dir>\n\nRead grid search output (just copy-paste the table) from file <input> and generate some nice graphs into <output-dir>.' % (sys.argv[0],))
+    print('Usage:\n  %s <input> <output-dir>\n\nRead grid search output (just redirect or tee its stdout into a file) from file <input> and generate some nice graphs into <output-dir>.' % (sys.argv[0],))
     sys.exit(2)
 
 columns = 'trai | test | comp | iter | batch |  rate  | decay | a1 | a2 | b1 | b2 | dropout | l2'.split('|')
@@ -26,10 +26,8 @@ gnuplot = 'gnuplot'
 smooth_samples = 200
 
 datas = defaultdict(list)
-foundflag = False
 for l in f:
-    if not foundflag and not (l[:2] == '0.' or l[:3] == '* 0'): continue
-    foundflag = True
+    if not (l.lstrip()[:2] == '0.' or l[:4] == '* 0.'): continue
     
     if l.startswith('  ') or l.startswith('* '): l = l[2:]
     l = list(map(float, l[:-1].split()))

@@ -11,6 +11,8 @@
 #include "options.hpp"
 #include "system.hpp"
 
+#include "debug.hpp"
+
 namespace jup {
 
 constexpr static jup_str SCHAFFILE_MAGIC = "^<k\x85";
@@ -30,6 +32,7 @@ constexpr static u64 PRIME64_3 =  1609587929392839161ull;
 constexpr static u64 PRIME64_4 =  9650029242287828579ull;
 constexpr static u64 PRIME64_5 =  2870177450012600261ull;
 
+Alarm_stream* tmpstream;
 static Path_hash_t concatenate_path(Path_hash_t a, u32 b) {
     // XXHash, specialized for an u64 and an u32
     // see https://github.com/Cyan4973/xxHash
@@ -362,6 +365,8 @@ void graph_generate_single(Alarm_stream* stream, jup_str repo, std::ostream* out
     Map_commits_t commits;
     Map_trees_t trees;
     Arena arena;
+
+    tmpstream = stream;
     
     while (not alarm_parse_eof(stream)) {
         alarm_progress(stream);
@@ -460,6 +465,11 @@ void graph_generate_single(Alarm_stream* stream, jup_str repo, std::ostream* out
         }
     }
 
+    jout << "Nodes:\n";
+    for (auto i: nodes) {
+        jout << i.first << ' ' << i.second << '\n';
+    }
+    
     if ((int)edges.size() < global_options.graph_min_edges) {
         jout << "Info: Skipping graph due to min edge limit of "
              << global_options.graph_min_edges << " edges.\n" << endl;
@@ -1054,12 +1064,25 @@ void graph_write_gdf(jup_str file_name, Graph const& graph) {
     }
 
     o << "edgedef>node1 VARCHAR,node2 VARCHAR,weight DOUBLE\n";
+
+    struct Edge_l {
+        u32 v, w, weight;
+        bool operator< (Edge_l o) const { return weight > o.weight; }
+    };
+    Array<Edge_l> edges;
+    auto guard = edges.reserve_guard(graph.num_edges());
+    
     for (u32 i = 0; i < (u32)graph.num_nodes(); ++i) {
         for (Edge e: graph.adjacent(i)) {
             if (i < e.other) {
-                o << i << ',' << e.other << ',' << e.weight << '\n';
+                edges.push_back({i, e.other, e.weight});
             }
         }
+    }
+    std::sort(edges.begin(), edges.end());
+
+    for (auto i: edges) {
+        o << i.v << ',' << i.w << ',' << i.weight << '\n';
     }
 }
 

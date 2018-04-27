@@ -113,7 +113,7 @@ struct Training_data {
         char _buffer2[32];
     };
 
-    static Unique_ptr_free<Training_data> make_unique(Hyperparam hyp);
+    static Unique_ptr_free<Training_data> make_unique(Hyperparam hyp, int realign_min_batchsize = 0);
 
     Batch_data batch(int index);
     Batch_data instance(int index);
@@ -130,7 +130,7 @@ static_assert(sizeof(Training_data) == 256);
 
 struct Network_state;
 
-Network_state* network_init(Hyperparam hyp);
+Network_state* network_init(Hyperparam hyp, bool disable_saving = false);
 void network_free(Network_state* state);
 void network_restore(Network_state* state);
 void network_save(Network_state* state);
